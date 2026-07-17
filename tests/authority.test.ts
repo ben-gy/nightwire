@@ -1,13 +1,18 @@
 /**
  * authority.test.ts — who is allowed to run the table.
  *
- * net.ts elects the lexicographically smallest peer id across the whole ROOM.
- * The table, though, is dealt to a FROZEN ROSTER. Those two lists stop agreeing
- * the moment anyone opens the invite link mid-game, and the gap is fatal: the
- * newcomer sorts first, every peer re-elects, the real host drops its
- * authoritative state, and the game stops for everyone.
+ * There is ONE host of a room and net.ts owns it: the incumbent keeps the role
+ * until it leaves. The table, though, is dealt to a FROZEN ROSTER, and the two
+ * lists stop agreeing the moment anyone opens the invite link mid-game. So
+ * authorityFor() takes net.ts's answer and only overrides it in the single case
+ * net.ts cannot see — a room host that holds no seat at this table.
  *
- * So authority follows the roster, never the room.
+ * Both directions are fatal if you get them wrong:
+ *  - Ignore the incumbent and elect min-id locally, and a seated peer with a
+ *    low id steals the table from the peer that dealt it. net.ts no longer
+ *    elects by min-id, so this is now reachable in a perfectly ordinary game.
+ *  - Follow the room blindly, and a spectator who just followed the link is
+ *    handed a table it holds no state for, and the game dies for everyone.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -49,22 +54,45 @@ function hostSession(n = 6): Session {
   return s;
 }
 
-describe('authorityFor — the frozen roster decides, not the room', () => {
+describe('authorityFor — the room has one host, and a seated one keeps the deal', () => {
+  it('defers to the incumbent even when a seated peer sorts lower', () => {
+    // The exact shape net.ts's incumbency now produces: 'p2' minted the room and
+    // hosts it, while 'p0' and 'p1' are seated and sort below. A local min-id
+    // rule would hand the table to 'p0' — which is the join-time host theft all
+    // over again, one layer down, and 'p0' holds no authoritative state.
+    const host = hostSession();
+    expect(host.authorityFor(['p0', 'p1', 'p2'], 'p2')).toBe('p2');
+  });
+
   it('ignores a mid-game joiner, however low their id sorts', () => {
     const host = hostSession();
-    // 'aaa' followed an invite link into a game already in progress. The room's
-    // own election would hand them the table; the roster must not.
-    expect(host.authorityFor(['aaa', 'p0', 'p1', 'p2'])).toBe('p0');
+    // 'aaa' followed an invite link into a game already in progress.
+    expect(host.authorityFor(['aaa', 'p0', 'p1', 'p2'], 'p0')).toBe('p0');
+  });
+
+  it('falls back to the lowest seated survivor when the ROOM host holds no seat', () => {
+    // The real host left, and the room elected the spectator that arrived on the
+    // link. It has no snapshots and can never run the table; the seated peers
+    // all compute the same replacement without talking to each other.
+    const host = hostSession();
+    expect(host.authorityFor(['aaa', 'p1', 'p2'], 'aaa')).toBe('p1');
   });
 
   it('still migrates to the next seated peer when the host leaves', () => {
     const host = hostSession();
-    expect(host.authorityFor(['aaa', 'p1', 'p2'])).toBe('p1');
+    expect(host.authorityFor(['aaa', 'p1', 'p2'], 'p1')).toBe('p1');
+  });
+
+  it('elects within the roster while the room has not settled on a host', () => {
+    // net.host() is null until net.ts settles. That is "no incumbent", not
+    // "elect me": main.ts holds off entirely, and this stays deterministic.
+    const host = hostSession();
+    expect(host.authorityFor(['aaa', 'p0', 'p1'], null)).toBe('p0');
   });
 
   it('returns null when nobody seated is left in the room', () => {
     const host = hostSession();
-    expect(host.authorityFor(['aaa', 'zzz'])).toBeNull();
+    expect(host.authorityFor(['aaa', 'zzz'], 'aaa')).toBeNull();
   });
 
   it('does NOT demote the real host when a spectator arrives', () => {
@@ -72,7 +100,7 @@ describe('authorityFor — the frozen roster decides, not the room', () => {
     const peers = ['aaa', 'p0', 'p1'];
 
     // This is exactly what main.ts does on every roster change.
-    host.setHost(host.authorityFor(peers) === 'p0');
+    host.setHost(host.authorityFor(peers, 'p0') === 'p0');
 
     expect(host.hosting()).toBe(true);
     // The killer symptom: a demoted host throws its authoritative state away and
@@ -135,6 +163,7 @@ describe('channel names — the table and the rematch must not share one', () =>
       peers: () => ['a'],
       host: () => 'a',
       isHost: () => true,
+      hostSettled: () => true,
       count: () => 1,
       channel: (name: string) => {
         registered.push(name);

@@ -1,6 +1,10 @@
 /* Nightwire — neon-noir control room at 3am. */
 
 :root {
+  /* mobile.css paints the html element --bg so the notch and the rounded corners
+     fill with the game rather than letterboxing to white. Point it at our ink. */
+  --bg: #0b0e17;
+
   --ink: #0b0e17;
   --ink-2: #131829;
   --ink-3: #1c2338;

@@ -17,14 +17,12 @@ import { Session } from '../src/session';
 type Recv = (data: unknown, from: string) => void;
 /** The trystero-level receiver per action name — net.ts fans out beneath it. */
 const recv = new Map<string, Recv>();
-/** net.ts only re-elects a host on join/leave, so the peer must ARRIVE. */
+/** The peer must ARRIVE before net.ts will tell it anything about the room. */
 let peerJoin: (id: string) => void = () => {};
 
 vi.mock('trystero', () => ({
   selfId: 'self-id',
   joinRoom: () => ({
-    // 'aaa' sorts below 'self-id', so net.ts elects it host and rematch.ts will
-    // accept an 'rs' from it. Without a host that isn't us, no table is dealt.
     getPeers: () => ({ aaa: {} }),
     onPeerJoin: (cb: (id: string) => void) => {
       peerJoin = cb;
@@ -47,7 +45,18 @@ const roster = [
   { id: 'self-id', name: 'Me' },
 ];
 
-/** Deal a table from the elected host, exactly as rematch.ts would receive it. */
+/**
+ * Hand the room to 'aaa'.
+ *
+ * We reached this room through "Create a room", so net.ts gave US the room with
+ * claimHost — and rematch.ts only honours an 'rs' from the host, so a table we
+ * did not deal ourselves needs a host that is not us. Announcing on '__h' is how
+ * a real incumbent says so, and 'aaa' sorts below 'self-id', so the two-claimants
+ * rule converges on it. Id order is doing real work here, not decoration.
+ */
+const cedeHostTo = (id: string): void => recv.get('__h')!({ host: id }, id);
+
+/** Deal a table from the host, exactly as rematch.ts would receive it. */
 const dealTable = (round: number): void =>
   recv.get('rs')!({ round, seed: 1234, roster }, 'aaa');
 
@@ -69,6 +78,7 @@ describe('a finished table detaches its receivers', () => {
     document.querySelector<HTMLButtonElement>('.re-create')!.click();
     await new Promise((r) => setTimeout(r, 20));
     peerJoin('aaa');
+    cedeHostTo('aaa');
 
     dealTable(1);
     expect(recv.get('snap')).toBeDefined();

@@ -23,7 +23,19 @@ export interface UiCallbacks {
   onClaim(value: number): void;
   onVote(target: string): void;
   onAgain(): void;
+  /** Host-only force-start. Omitted in solo, where there is nobody to wait for. */
+  onStartNow?(): void;
+  /** Back to the lobby WITHOUT leaving the room. Omitted in solo. */
+  onLobby?(): void;
   onMenu(): void;
+}
+
+/** What the results screen shows about the next table. */
+export interface AgainState {
+  label: string;
+  status: string;
+  /** Host-only: enough players are in that the host may skip the countdown. */
+  canStart?: boolean;
 }
 
 export interface GameUi {
@@ -31,7 +43,7 @@ export interface GameUi {
   seatEl(id: string): HTMLElement | null;
   /** Repaint the results "Play again" control — the label plus a live ready
    *  count, since a rematch waits on the rest of the table, not on you. */
-  setAgain(state: { label: string; status: string }): void;
+  setAgain(state: AgainState): void;
   destroy(): void;
 }
 
@@ -89,7 +101,7 @@ export function createGameUi(container: HTMLElement, cb: UiCallbacks): GameUi {
   let hovered: string | null = null;
   /** Latest rematch copy, kept so a panel re-render repaints it rather than
    *  reverting to a stale "Play again" while the room is already voting. */
-  let again = { label: 'Play again', status: '' };
+  let again: AgainState = { label: 'Play again', status: '' };
 
   function againPaint(): void {
     const btn = panel.querySelector<HTMLButtonElement>('[data-again]');
@@ -99,6 +111,10 @@ export function createGameUi(container: HTMLElement, cb: UiCallbacks): GameUi {
       btn.classList.toggle('waiting', !!again.status && again.label !== 'Play again');
     }
     if (status) status.textContent = again.status;
+    // The host never has to sit and hope: once enough seats are in, it can deal
+    // immediately rather than wait out the grace countdown.
+    const startNow = panel.querySelector<HTMLButtonElement>('[data-start-now]');
+    if (startNow) startNow.hidden = !again.canStart;
   }
 
   function buildSeats(pub: PublicState): void {
@@ -295,11 +311,15 @@ export function createGameUi(container: HTMLElement, cb: UiCallbacks): GameUi {
           ${renderReveal(pub)}
           <div class="row">
             <button class="btn primary" data-again>Play again</button>
+            ${cb.onStartNow ? '<button class="btn" data-start-now hidden>Start now</button>' : ''}
+            ${cb.onLobby ? '<button class="btn" data-lobby>Back to lobby</button>' : ''}
             <button class="btn ghost" data-menu>Menu</button>
           </div>
           <p class="again-status" role="status" aria-live="polite" data-again-status></p>
         </div>`;
       panel.querySelector('[data-again]')?.addEventListener('click', () => cb.onAgain());
+      panel.querySelector('[data-start-now]')?.addEventListener('click', () => cb.onStartNow?.());
+      panel.querySelector('[data-lobby]')?.addEventListener('click', () => cb.onLobby?.());
       panel.querySelector('[data-menu]')?.addEventListener('click', () => cb.onMenu());
       againPaint();
       return;

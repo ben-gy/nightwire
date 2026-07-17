@@ -4,12 +4,17 @@
  * Screens: menu → (solo | room entry → lobby) → game → results.
  */
 
+// mobile.css FIRST — it is the baseline main.css is allowed to override, not
+// the other way round.
+import './styles/mobile.css';
 import './styles/main.css';
+import { hardenViewport } from './engine/mobile';
 import { createStore } from './engine/storage';
 import { createSfx, type SfxName } from './engine/sound';
 import { createNet, type Net } from './engine/net';
 import { createRounds, type Rounds, type RoundPlayer } from './engine/rematch';
 import {
+  clearRoomInUrl,
   createLobby,
   createRoomEntry,
   normalizeRoomCode,
@@ -23,6 +28,11 @@ import { shuffle, makeRng } from './engine/rng';
 import { MIN_SEATS, type PublicState, type PrivateView, type Role } from './game';
 
 const SLUG = 'nightwire';
+
+// Before anything renders: iOS ignores the viewport meta's user-scalable=no, so
+// a double-tap or a pinch zooms into a live table with no way back out.
+hardenViewport();
+
 const store = createStore(SLUG);
 const sfx = createSfx(store.get('muted', false));
 
@@ -256,11 +266,12 @@ function startSolo(seatCount: number): void {
 function showRoomEntry(): void {
   void leaveRoom();
 
-  // Arrived on an invite link? Drop straight into that room — once, ever.
+  // Arrived on an invite link? Drop straight into that room — once, ever. We are
+  // the guest here, never the host: whoever sent the link already holds the room.
   if (pendingRoom) {
     const code = pendingRoom;
     pendingRoom = null;
-    void openRoom(code);
+    void openRoom(code, false);
     return;
   }
 
@@ -268,7 +279,7 @@ function showRoomEntry(): void {
     container: screen,
     title: 'Play with friends',
     subtitle: 'Nightwire needs 4–10 players. Start a room, or type a friend’s code.',
-    onSubmit: (code) => void openRoom(code),
+    onSubmit: (code, created) => void openRoom(code, created),
     onCancel: () => showMenu(),
   });
 }
@@ -278,7 +289,7 @@ function showRoomEntry(): void {
  * the first and every rematch — is dealt inside this one Net via `rounds`.
  * Nothing here may call net.leave() except the trip back to the menu.
  */
-async function openRoom(code: string): Promise<void> {
+async function openRoom(code: string, created: boolean): Promise<void> {
   leaveRoom();
   // A previous room may still be tearing down (Trystero defers it ~99ms).
   // Joining inside that window returns the dying room, so wait it out.
@@ -288,7 +299,10 @@ async function openRoom(code: string): Promise<void> {
 
   try {
     net = createNet(
-      { appId: SLUG, roomId: code },
+      // `created` is the difference between minting this code and walking into
+      // someone else's room. Only the minter may host on arrival; a guest waits
+      // to hear from the incumbent instead of racing it for the role.
+      { appId: SLUG, roomId: code, claimHost: created },
       {
         // Wiring these is the whole host-transfer contract. A bare createNet()
         // here would make a takeover impossible.
@@ -408,7 +422,7 @@ function startTable(seed: number, players: RoundPlayer[], isHost: boolean): void
       showLobby();
     },
   });
-  mountGame(net.selfId, playAgain);
+  mountGame(net.selfId, playAgain, true);
 
   if (isHost) {
     session.startAsHost(
@@ -424,13 +438,20 @@ function startTable(seed: number, players: RoundPlayer[], isHost: boolean): void
 }
 
 /**
- * Hand the deal to the right seat. net.ts elects across the whole room, but a
- * spectator who followed the invite link mid-game must never be handed a table
- * they hold no state for — authority follows the frozen roster (session.ts).
+ * Hand the deal to the right seat.
+ *
+ * net.ts is the single answer to "who hosts this room" — the incumbent, until it
+ * leaves. session.authorityFor() takes that answer and only overrides it in the
+ * one case net.ts cannot see: a room host holding no seat at this table.
+ *
+ * Nothing may be decided before the room settles. An unsettled peer has heard
+ * from nobody, so host() is null — treating that as "no incumbent, elect
+ * locally" is how every peer used to crown itself on a mesh that never formed.
  */
 function syncAuthority(): void {
   if (!net || !session) return;
-  session.setHost(session.authorityFor(net.peers()) === net.selfId);
+  if (!net.hostSettled()) return;
+  session.setHost(session.authorityFor(net.peers(), net.host()) === net.selfId);
 }
 
 /**
@@ -450,13 +471,26 @@ function paintAgain(): void {
   if (!rounds || !gameUi) return;
   const s = rounds.state();
   const waiting = s.present.length - s.votes.length;
+  const secs = s.startsInMs !== null ? Math.ceil(s.startsInMs / 1000) : null;
+
+  let status: string;
+  if (!s.voted) {
+    status = `${s.votes.length}/${s.present.length} ready for another table`;
+  } else if (secs !== null) {
+    // Say WHY we are still waiting and when it ends. A bare "waiting…" with no
+    // horizon is exactly what made the old unanimity rule feel like a hang.
+    status = `Dealing in ${secs}s — waiting for ${waiting} more player${waiting === 1 ? '' : 's'}`;
+  } else if (waiting > 0) {
+    status = `Waiting for ${waiting} more player${waiting === 1 ? '' : 's'}…`;
+  } else {
+    status = 'Dealing…';
+  }
+
   gameUi.setAgain({
     label: s.voted ? 'Ready — waiting…' : 'Play again',
-    status: s.voted
-      ? waiting > 0
-        ? `Waiting for ${waiting} more player${waiting === 1 ? '' : 's'}…`
-        : 'Dealing…'
-      : `${s.votes.length}/${s.present.length} ready for another table`,
+    status,
+    // Nothing to force while the whole table is already in: the deal is imminent.
+    canStart: s.canStart && s.votes.length < s.present.length,
   });
 }
 
@@ -472,10 +506,24 @@ window.addEventListener('beforeunload', () => {
 // Game mount + juice
 // ---------------------------------------------------------------------------
 
-function mountGame(selfId: string, again: () => void): void {
+/** `room` adds the controls that only mean anything with other people in it. */
+function mountGame(selfId: string, again: () => void, room = false): void {
   prevPub = null;
   gameUi = createGameUi(screen, {
     selfId,
+    ...(room
+      ? {
+          onStartNow: () => rounds?.go(),
+          onLobby: () => {
+            // Back to the lobby WITHOUT leaving the room — the mesh, the roster
+            // and everyone's records survive. From there you can wait, re-ready,
+            // or just see who is still around, instead of the summary being a
+            // dead end whose only way out was the menu.
+            rounds?.unvote();
+            showLobby();
+          },
+        }
+      : {}),
     onProbe: (t) => {
       play('probe');
       session?.act({ t: 'probe', target: t });
@@ -622,6 +670,10 @@ function leaveRoom(): Promise<void> {
   rounds?.destroy();
   rounds = null;
   roomCode = '';
+  // The room is over for us — take the code out of the URL so a refresh, or
+  // reopening from the home-screen icon, lands on the menu instead of silently
+  // dragging us back into a table we walked away from.
+  clearRoomInUrl();
   const leaving = net;
   net = null;
   // CHAIN, never replace. leaveRoom() runs again on the way into a new room, and

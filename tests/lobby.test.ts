@@ -7,7 +7,14 @@
  */
 
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import { createLobby, normalizeRoomCode, mintCode } from '../src/engine/lobby';
+import {
+  clearRoomInUrl,
+  createLobby,
+  inviteLink,
+  mintCode,
+  normalizeRoomCode,
+  setRoomInUrl,
+} from '../src/engine/lobby';
 import type { Net } from '../src/engine/net';
 import type { Rounds, RoundsState } from '../src/engine/rematch';
 
@@ -59,37 +66,35 @@ describe('normalizeRoomCode', () => {
  * the handle it returns, so destroy() was never called: the poll outlived the
  * screen and kept repainting a container the app had moved on from.
  */
-describe('createLobby teardown', () => {
-  afterEach(() => {
-    vi.useRealTimers();
-    vi.restoreAllMocks();
-  });
+function fakeRounds(): Rounds {
+  const state: RoundsState = {
+    round: 0,
+    phase: 'waiting',
+    votes: [],
+    present: [{ id: 'a', name: 'A' }],
+    voted: false,
+    isHost: true,
+    canStart: false,
+    startsInMs: null,
+  };
+  return {
+    vote() {},
+    unvote() {},
+    go() {},
+    finish() {},
+    state: () => state,
+    destroy() {},
+  };
+}
 
-  function fakeRounds(): Rounds {
-    const state: RoundsState = {
-      round: 0,
-      phase: 'waiting',
-      votes: [],
-      present: [{ id: 'a', name: 'A' }],
-      voted: false,
-      isHost: true,
-      canStart: false,
-    };
-    return {
-      vote() {},
-      unvote() {},
-      go() {},
-      finish() {},
-      state: () => state,
-      destroy() {},
-    };
-  }
-
-  const fakeNet = {
+/** `settled` is net.ts's "I have heard from the room" — see hostSettled(). */
+function fakeNet(settled = true): Net {
+  return {
     selfId: 'a',
     peers: () => ['a'],
-    host: () => 'a',
-    isHost: () => true,
+    host: () => (settled ? 'a' : null),
+    isHost: () => settled,
+    hostSettled: () => settled,
     count: () => 1,
     channel: () => {
       const send = (() => {}) as never;
@@ -98,6 +103,13 @@ describe('createLobby teardown', () => {
     ping: async () => 0,
     leave: async () => {},
   } as unknown as Net;
+}
+
+describe('createLobby teardown', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
 
   it('stops polling once destroyed', () => {
     vi.useFakeTimers();
@@ -105,7 +117,13 @@ describe('createLobby teardown', () => {
     const rounds = fakeRounds();
     const peeked = vi.spyOn(rounds, 'state');
 
-    const lobby = createLobby({ container, net: fakeNet, rounds, roomCode: 'K7QP', minPlayers: 4 });
+    const lobby = createLobby({
+      container,
+      net: fakeNet(),
+      rounds,
+      roomCode: 'K7QP',
+      minPlayers: 4,
+    });
     vi.advanceTimersByTime(3000);
     expect(peeked.mock.calls.length).toBeGreaterThan(0);
 
@@ -115,5 +133,85 @@ describe('createLobby teardown', () => {
 
     // A destroyed lobby must not touch the room or the DOM again.
     expect(peeked).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The second shipped bug, at the layer the player actually sees it.
+ *
+ * Every peer used to paint itself HOST the instant it joined, before the mesh
+ * had formed — and if discovery was slow or failed, it stayed that way. Two
+ * players, the right room code, both wearing the host badge, seeing nobody. The
+ * lobby must say "connecting" until net.ts has actually settled, and must not
+ * offer a control that only the host can meaningfully press.
+ */
+describe('createLobby — an unsettled room is not a hosted room', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  function paint(settled: boolean): HTMLElement {
+    const container = document.createElement('div');
+    createLobby({
+      container,
+      net: fakeNet(settled),
+      rounds: fakeRounds(),
+      roomCode: 'K7QP',
+      minPlayers: 4,
+    }).destroy();
+    return container;
+  }
+
+  it('says "connecting" and pins no HOST badge while unsettled', () => {
+    const el = paint(false);
+    expect(el.querySelector('.lobby-searching')?.textContent).toMatch(/connecting/i);
+    expect(el.querySelector('.lobby-badge')).toBeNull();
+    expect(el.querySelector('.lobby-start')).toBeNull();
+  });
+
+  it('will not let you ready up into a room that has not connected', () => {
+    // Readying up here is a promise the room cannot keep: there is no host to
+    // hear the vote, so the button just silently does nothing.
+    expect(paint(false).querySelector<HTMLButtonElement>('.lobby-ready')!.disabled).toBe(true);
+  });
+
+  it('shows the host badge and the Start control once settled', () => {
+    const el = paint(true);
+    expect(el.querySelector('.lobby-searching')?.textContent ?? '').not.toMatch(/connecting/i);
+    expect(el.querySelector('.lobby-badge')?.textContent).toBe('HOST');
+    expect(el.querySelector<HTMLButtonElement>('.lobby-ready')!.disabled).toBe(false);
+  });
+});
+
+/**
+ * ?room= outliving the session: "it always spawns the same game room no matter
+ * what". Nothing ever cleared the parameter, so a reload — or reopening from the
+ * new home-screen icon — silently rejoined a room the player had left.
+ */
+describe('clearRoomInUrl', () => {
+  it('drops ?room= so a reopen does not rejoin a room you left', () => {
+    history.replaceState(null, '', '/?room=K7QP');
+    clearRoomInUrl();
+    expect(new URL(location.href).searchParams.has('room')).toBe(false);
+  });
+
+  it('leaves an unrelated query string alone', () => {
+    history.replaceState(null, '', '/?room=K7QP&debug=1');
+    clearRoomInUrl();
+    const url = new URL(location.href);
+    expect(url.searchParams.has('room')).toBe(false);
+    expect(url.searchParams.get('debug')).toBe('1');
+  });
+
+  it('is a no-op when there is no room to clear', () => {
+    history.replaceState(null, '', '/?debug=1');
+    clearRoomInUrl();
+    expect(location.search).toBe('?debug=1');
+  });
+
+  it('round-trips with setRoomInUrl — the invite link still works', () => {
+    history.replaceState(null, '', '/');
+    setRoomInUrl('K7QP');
+    expect(inviteLink('K7QP')).toContain('room=K7QP');
+    clearRoomInUrl();
+    expect(location.search).toBe('');
   });
 });

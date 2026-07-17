@@ -6,6 +6,7 @@
   "description": "Some of the numbers are lying — find the Ghosts at the table before the lights go out.",
   "scripts": {
     "dev": "vite",
+    "icons": "node scripts/gen-icons.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run",

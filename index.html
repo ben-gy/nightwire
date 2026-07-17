@@ -8,7 +8,19 @@
     <meta property="og:title" content="Nightwire" />
     <meta property="og:description" content="Some of the numbers are lying — find the Ghosts at the table before the lights go out." />
     <meta property="og:type" content="website" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- Every asset href here is RELATIVE. The game is served from a project
+         subpath during development and from its own domain in production; a
+         leading slash resolves to the wrong place in one of the two, and a
+         manifest whose icons 404 fails install with no visible error. -->
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <meta name="theme-color" content="#0b0e17" />
+    <!-- iOS IGNORES the manifest's icons. This 180x180 is the ONLY icon it will
+         use, and it must be opaque — iOS composites transparency onto black. -->
+    <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Nightwire" />
     <title>Nightwire</title>
     <script defer src="https://static.cloudflareinsights.com/beacon.min.js" data-cf-beacon='{"token": "ba2bab2193ba42c1bea3d6714fcd0e28"}'></script>
   </head>

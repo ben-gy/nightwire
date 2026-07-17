@@ -173,18 +173,29 @@ export class Session {
   /**
    * Who should be running this round, given who is in the room right now.
    *
-   * Authority follows the FROZEN ROSTER, not the room. net.ts elects the
-   * lexicographically smallest peer id across everyone present — so a spectator
-   * who opened the invite link mid-game and happens to sort first would be
-   * handed a table it holds no state for, and the game would die. Electing
-   * within the roster keeps the seat that actually has the snapshots, and still
-   * migrates cleanly when the real host walks out.
+   * There is exactly ONE host of a room and net.ts owns it: the incumbent keeps
+   * the role until it leaves. This function does not hold a second opinion — it
+   * only answers the question net.ts cannot, which is what happens when the room
+   * host holds no seat at THIS table.
    *
-   * Returns null when nobody seated is left in the room.
+   *  - The room host is seated → it is the authority, full stop. Deferring to it
+   *    is not optional: net.ts no longer elects by min-id, so the host may well
+   *    sort ABOVE a seated peer, and a local min-id rule would quietly steal the
+   *    table from the very peer that dealt it — the join-time host theft, moved
+   *    down a layer.
+   *  - The room host holds no seat (they followed the invite link mid-game and
+   *    the real host left, so the room elected a spectator) → the table falls to
+   *    the lowest-sorting SEATED survivor, which every seated peer computes
+   *    identically. A spectator holds no snapshots; handing it the deal kills
+   *    the game.
+   *
+   * `host` is null while net.ts is still settling, or when the room's host is a
+   * spectator. Returns null when nobody seated is left in the room at all.
    */
-  authorityFor(peers: readonly string[]): string | null {
+  authorityFor(peers: readonly string[], host?: string | null): string | null {
     const seated = new Set(this.seatIds());
     const eligible = peers.filter((p) => seated.has(p)).sort();
+    if (host && eligible.includes(host)) return host;
     return eligible[0] ?? null;
   }
 
