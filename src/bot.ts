@@ -186,6 +186,9 @@ export function chooseClaim(pub: PublicState, id: string, priv: PrivateView, rng
     by: id,
     target,
     window: win,
+    // The solver reasons from the PUBLIC ledger, where the true reading is
+    // stripped until game over — so a hypothetical row must not carry one.
+    truth: null,
     dark: false,
   };
 

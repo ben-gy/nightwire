@@ -333,7 +333,7 @@ describe('round advance', () => {
   it('keeps the ledger across rounds — old claims stay evidence', () => {
     const s = makeState(['crew', 'crew', 'crew', 'ghost'], {
       phase: 'resolve',
-      ledger: [{ round: 1, by: 'p0', target: 'p1', window: ['p0', 'p1', 'p2'], claim: 1, dark: false }],
+      ledger: [{ round: 1, by: 'p0', target: 'p1', window: ['p0', 'p1', 'p2'], claim: 1, truth: null, dark: false }],
     });
     expect(nextRound(s).ledger).toHaveLength(1);
   });

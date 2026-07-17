@@ -8,8 +8,8 @@
  *   host  -> all : 'snap' public state
  *   host  -> one : 'priv' your role + your reading (nobody else's, ever)
  *   peer  -> host: 'act'  probe / cut / claim / vote
- *   host* -> all : 'rq'   new host asks everyone to re-attest their OWN role
- *   peer  -> host: 'rl'   my role (a peer can only ever attest for itself)
+ *   host* -> all : 'rrq'  new host asks everyone to re-attest their OWN role
+ *   peer  -> host: 'rrl'  my role (a peer can only ever attest for itself)
  *
  * Why 'rq'/'rl' exist: no peer is ever sent another peer's secret role, so a
  * promoted host has no role table. It rebuilds one by asking each surviving
@@ -51,6 +51,22 @@ export type Action =
   | { t: 'claim'; value: number }
   | { t: 'vote'; target: string };
 
+/**
+ * The channel names the table itself uses.
+ *
+ * The role re-attest is 'rrq'/'rrl' and NOT 'rq': 'rq' belongs to rematch.ts's
+ * resync, net.channel() fans out to every subscriber, and a shared name would
+ * make each peer answer the rematch poll by posting its secret role to whoever
+ * asked. Kept here so a test can assert the two sets never overlap again.
+ */
+export const GAME_CHANNELS = {
+  snap: 'snap',
+  priv: 'priv',
+  act: 'act',
+  roleRequest: 'rrq',
+  roleReply: 'rrl',
+} as const;
+
 export interface Transport {
   sendSnap(pub: PublicState): void;
   sendPriv(to: string, priv: PrivateView): void;
@@ -63,9 +79,18 @@ export interface SessionOpts {
   selfId: string;
   solo: boolean;
   transport?: Transport;
+  /**
+   * This round's FROZEN roster (rematch.ts hands it to every peer as identical
+   * bytes). Authority may only ever land on a seat in here — see authorityFor.
+   * Omitted in solo and in tests that drive a Session straight from a snapshot,
+   * where the seats themselves are the roster.
+   */
+  roster?: readonly string[];
   onPublic: (pub: PublicState) => void;
   onPrivate: (priv: PrivateView | null) => void;
   onFlash?: (msg: string) => void;
+  /** Promoted with no state to rebuild from. There is no table left to run. */
+  onStranded?: () => void;
   now?: () => number;
   /** Per-phase deadlines in ms. Solo has none — think as long as you like. */
   deadlines?: { night: number; dawn: number; vote: number };
@@ -98,6 +123,7 @@ export class Session {
   private opts: SessionOpts;
   private now: () => number;
   private deadlines: { night: number; dawn: number; vote: number };
+  private roster: readonly string[];
 
   /** Authoritative state. Non-null only while we are the host. */
   private state: GameState | null = null;
@@ -128,6 +154,38 @@ export class Session {
     this.tx = opts.transport ?? noopTransport;
     this.now = opts.now ?? (() => Date.now());
     this.deadlines = opts.deadlines ?? DEFAULT_DEADLINES;
+    this.roster = opts.roster ?? [];
+  }
+
+  /** The seats this round was dealt to. The frozen roster when we have one;
+   *  otherwise the table we can see, which amounts to the same list. */
+  private seatIds(): string[] {
+    if (this.roster.length) return [...this.roster];
+    return (this.state?.seats ?? this.pub?.seats ?? []).map((s) => s.id);
+  }
+
+  /** True when this peer holds a seat at this round's table. */
+  private seated(): boolean {
+    const ids = this.seatIds();
+    return ids.length === 0 || ids.includes(this.selfId);
+  }
+
+  /**
+   * Who should be running this round, given who is in the room right now.
+   *
+   * Authority follows the FROZEN ROSTER, not the room. net.ts elects the
+   * lexicographically smallest peer id across everyone present — so a spectator
+   * who opened the invite link mid-game and happens to sort first would be
+   * handed a table it holds no state for, and the game would die. Electing
+   * within the roster keeps the seat that actually has the snapshots, and still
+   * migrates cleanly when the real host walks out.
+   *
+   * Returns null when nobody seated is left in the room.
+   */
+  authorityFor(peers: readonly string[]): string | null {
+    const seated = new Set(this.seatIds());
+    const eligible = peers.filter((p) => seated.has(p)).sort();
+    return eligible[0] ?? null;
   }
 
   // -------------------------------------------------------------------------
@@ -265,6 +323,10 @@ export class Session {
       this.state = null;
       return;
     }
+    // A peer with no seat at this round's table is a spectator and can never be
+    // its authority, however the room-wide election sorted. Taking the deal here
+    // would hand the table to someone holding no state at all.
+    if (!this.seated()) return;
     this.isHost = true;
 
     if (this.state) {
@@ -272,8 +334,18 @@ export class Session {
       this.publish();
       return;
     }
-    if (!this.pub || this.pub.phase === 'over') {
+    if (this.pub?.phase === 'over') {
       this.opts.onFlash?.("You're the host now.");
+      return;
+    }
+    if (!this.pub) {
+      // Promoted before a single snapshot ever reached us: there is nothing to
+      // rebuild and no attest can conjure one. Say so and hand the player back
+      // to the lobby rather than leaving them staring at a table that can never
+      // advance — this branch used to just flash and freeze forever.
+      this.isHost = false;
+      this.opts.onFlash?.('The host left before the table reached you — back to the lobby.');
+      this.opts.onStranded?.();
       return;
     }
 

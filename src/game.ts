@@ -36,6 +36,15 @@ export interface LedgerRow {
   window: string[];
   /** What was published. null when the console was cut — no reading exists. */
   claim: number | null;
+  /**
+   * What the console actually read. SECRET: publicView strips this until the
+   * game is over, because a Ghost's lie is only a lie once you can compare the
+   * two — leaking it mid-game would hand the Crew every role for free.
+   *
+   * null when the console was dark (no reading existed), and null for rounds a
+   * promoted host inherited, since the truth died with the old host.
+   */
+  truth: number | null;
   dark: boolean;
 }
 
@@ -366,6 +375,7 @@ export function resolveDawn(state: GameState): GameState {
       target,
       window: windowOf(state, target),
       claim: dark ? null : (claims[id] ?? null),
+      truth: dark ? null : (state.readings[id] ?? null),
       dark,
     });
   }
@@ -522,7 +532,10 @@ export function publicView(state: GameState): PublicState {
     ghostCount: state.ghostCount,
     darkened: state.darkened,
     votes: state.votes,
-    ledger: state.ledger,
+    // The true readings ride in the host's ledger but must never leave it while
+    // the game is live — they'd name every Ghost outright. At game over they're
+    // the payoff: the reveal shows exactly who published what, and what they saw.
+    ledger: over ? state.ledger : state.ledger.map((r) => ({ ...r, truth: null })),
     ejections: state.ejections,
     lastEjected: state.lastEjected,
     winner: state.winner,

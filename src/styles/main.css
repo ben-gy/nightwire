@@ -731,6 +731,64 @@ a {
   margin: 8px 0;
 }
 
+/* ------------------------------------------------ the reveal (game over) */
+
+.reveal-ledger {
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 8px 12px;
+  margin: 12px 0 0;
+  text-align: left;
+}
+
+.reveal-ledger summary {
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 0.82rem;
+  padding: 4px 0;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.reveal-ledger .lg-round li {
+  grid-template-columns: 1fr auto 1fr auto auto;
+}
+
+.reveal-ledger .lg-round li.is-lie {
+  background: color-mix(in srgb, var(--violet) 18%, var(--ink-3));
+}
+
+.reveal-ledger .lg-round li.is-lie .lg-claim {
+  color: var(--violet);
+}
+
+.lg-truth {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--dim);
+  min-width: 4.4em;
+  text-align: right;
+}
+
+.lg-round li.is-lie .lg-truth {
+  color: var(--rose);
+}
+
+.again-status {
+  color: var(--dim);
+  font-size: 0.78rem;
+  margin: 8px 0 0;
+  min-height: 1.1em;
+}
+
+.btn.waiting {
+  opacity: 0.75;
+}
+
 .logbox ol {
   list-style: none;
   margin: 6px 0 0;

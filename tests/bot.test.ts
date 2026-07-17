@@ -14,6 +14,9 @@ const row = (by: string, window: string[], claim: number | null, dark = false): 
   target: window[1] ?? window[0],
   window,
   claim,
+  // Bots see the public ledger, where the true reading is withheld until the
+  // game is over. Handing them one here would test a bot that cannot exist.
+  truth: null,
   dark,
 });
 
@@ -234,9 +237,9 @@ describe('bot decisions', () => {
     const p = pub();
     p.ghostCount = 1;
     p.ledger = [
-      { round: 1, by: 'p1', target: 'p1', window: ['p0', 'p1', 'p2'], claim: 0, dark: false },
-      { round: 1, by: 'p3', target: 'p3', window: ['p2', 'p3', 'p4'], claim: 1, dark: false },
-      { round: 1, by: 'p5', target: 'p5', window: ['p4', 'p5', 'p0'], claim: 0, dark: false },
+      { round: 1, by: 'p1', target: 'p1', window: ['p0', 'p1', 'p2'], claim: 0, truth: null, dark: false },
+      { round: 1, by: 'p3', target: 'p3', window: ['p2', 'p3', 'p4'], claim: 1, truth: null, dark: false },
+      { round: 1, by: 'p5', target: 'p5', window: ['p4', 'p5', 'p0'], claim: 0, truth: null, dark: false },
     ];
     const priv = { role: 'crew' as const, reading: 0, probeTarget: 'p1', cutTarget: null, allies: [] };
     // Exactly one world survives, and it has p3 as the Ghost.

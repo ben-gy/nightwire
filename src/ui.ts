@@ -29,6 +29,9 @@ export interface UiCallbacks {
 export interface GameUi {
   update(pub: PublicState, priv: PrivateView | null): void;
   seatEl(id: string): HTMLElement | null;
+  /** Repaint the results "Play again" control — the label plus a live ready
+   *  count, since a rematch waits on the rest of the table, not on you. */
+  setAgain(state: { label: string; status: string }): void;
   destroy(): void;
 }
 
@@ -84,6 +87,19 @@ export function createGameUi(container: HTMLElement, cb: UiCallbacks): GameUi {
   let lastPriv: PrivateView | null = null;
   /** The window the player is currently inspecting (tap a seat to preview). */
   let hovered: string | null = null;
+  /** Latest rematch copy, kept so a panel re-render repaints it rather than
+   *  reverting to a stale "Play again" while the room is already voting. */
+  let again = { label: 'Play again', status: '' };
+
+  function againPaint(): void {
+    const btn = panel.querySelector<HTMLButtonElement>('[data-again]');
+    const status = panel.querySelector<HTMLElement>('[data-again-status]');
+    if (btn) {
+      btn.textContent = again.label;
+      btn.classList.toggle('waiting', !!again.status && again.label !== 'Play again');
+    }
+    if (status) status.textContent = again.status;
+  }
 
   function buildSeats(pub: PublicState): void {
     ring.innerHTML = '';
@@ -276,13 +292,16 @@ export function createGameUi(container: HTMLElement, cb: UiCallbacks): GameUi {
                 : 'The Ghosts outnumber the Crew. There was no one left to stop them.'
           }</p>
           <p class="result-sub">You were <strong>${priv.role === 'ghost' ? 'a Ghost' : 'Crew'}</strong>.</p>
+          ${renderReveal(pub)}
           <div class="row">
             <button class="btn primary" data-again>Play again</button>
             <button class="btn ghost" data-menu>Menu</button>
           </div>
+          <p class="again-status" role="status" aria-live="polite" data-again-status></p>
         </div>`;
       panel.querySelector('[data-again]')?.addEventListener('click', () => cb.onAgain());
       panel.querySelector('[data-menu]')?.addEventListener('click', () => cb.onMenu());
+      againPaint();
       return;
     }
 
@@ -361,6 +380,56 @@ export function createGameUi(container: HTMLElement, cb: UiCallbacks): GameUi {
     }
   }
 
+  /**
+   * The reveal. Every night this game asks you to weigh a number against the
+   * people around it; the ledger only ever showed what was published, so when
+   * it ended you never found out which of those numbers were lies. Now the
+   * truth rides alongside the claim (host-side only until game over — see
+   * publicView) and this is where it lands: every false number, by whom, and by
+   * how much they moved it.
+   */
+  function renderReveal(pub: PublicState): string {
+    const nameOf = (id: string) => pub.seats.find((s) => s.id === id)?.name ?? id;
+    const known = pub.ledger.filter((r) => !r.dark && r.truth !== null && r.claim !== null);
+    const lies = known.filter((r) => r.claim !== r.truth);
+    if (known.length === 0) return '';
+
+    const rounds = [...new Set(known.map((r) => r.round))].sort((a, b) => a - b);
+    const rows = (rd: number) =>
+      known
+        .filter((r) => r.round === rd)
+        .map((r) => {
+          const lied = r.claim !== r.truth;
+          return `<li class="${lied ? 'is-lie' : ''}">
+            <span class="lg-by">${escapeHtml(nameOf(r.by))}</span>
+            <span class="lg-arrow" aria-hidden="true">→</span>
+            <span class="lg-target">${escapeHtml(nameOf(r.target))}</span>
+            <span class="lg-claim">${r.claim}</span>
+            <span class="lg-truth">${lied ? `was ${r.truth}` : 'true'}</span>
+          </li>`;
+        })
+        .join('');
+
+    return `
+      <details class="reveal-ledger" open>
+        <summary>Who lied <span class="hint">${
+          lies.length === 0
+            ? 'every number was honest'
+            : `${lies.length} of ${known.length} published number${known.length === 1 ? '' : 's'} ${
+                lies.length === 1 ? 'was' : 'were'
+              } false`
+        }</span></summary>
+        ${rounds
+          .map(
+            (rd) => `<div class="lg-round">
+              <h4>Round ${rd}</h4>
+              <ul>${rows(rd)}</ul>
+            </div>`,
+          )
+          .join('')}
+      </details>`;
+  }
+
   function renderLedger(pub: PublicState): void {
     if (pub.ledger.length === 0) {
       ledgerEl.innerHTML = `<p class="empty">Nothing published yet. The first readings arrive at dawn.</p>`;
@@ -393,6 +462,10 @@ export function createGameUi(container: HTMLElement, cb: UiCallbacks): GameUi {
   return {
     update,
     seatEl: (id) => seatEls.get(id) ?? null,
+    setAgain(next) {
+      again = next;
+      againPaint();
+    },
     destroy() {
       container.innerHTML = '';
     },

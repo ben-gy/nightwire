@@ -8,13 +8,14 @@ import './styles/main.css';
 import { createStore } from './engine/storage';
 import { createSfx, type SfxName } from './engine/sound';
 import { createNet, type Net } from './engine/net';
+import { createRounds, type Rounds, type RoundPlayer } from './engine/rematch';
 import {
   createLobby,
   createRoomEntry,
   normalizeRoomCode,
   setRoomInUrl,
 } from './engine/lobby';
-import { Session, type Action, type Transport } from './session';
+import { Session, GAME_CHANNELS, type Action, type Transport } from './session';
 import { createGameUi, type GameUi } from './ui';
 import { createFx, type Fx } from './fx';
 import { BOT_NAMES } from './bot';
@@ -28,13 +29,27 @@ const sfx = createSfx(store.get('muted', false));
 const app = document.querySelector<HTMLElement>('#app')!;
 
 let net: Net | null = null;
+let rounds: Rounds | null = null;
+let lobby: { destroy: () => void } | null = null;
+let roomEntry: { destroy: () => void } | null = null;
 let session: Session | null = null;
 let gameUi: GameUi | null = null;
 let fx: Fx | null = null;
 let prevPub: PublicState | null = null;
-/** Set once a deep ?room= link has been consumed, so "Play with friends" then
- *  shows the create/join screen again rather than silently reusing the room. */
-let deepLinkUsed = false;
+/** Detaches THIS round's receivers from the shared Net (see wireRound). */
+let unwireRound: (() => void) | null = null;
+let againTick: ReturnType<typeof setInterval> | null = null;
+let roomCode = '';
+
+/** A ?room= in the URL (an invite link) is honoured ONCE. joinRoom() also writes
+ *  the code into the URL, so without this the room's creator would find "Play
+ *  with friends" silently re-entering the finished room while their guest — who
+ *  had already spent the link — got the create/join screen. Same button, two
+ *  behaviours, depending on how you arrived. */
+let pendingRoom: string | null = (() => {
+  const c = normalizeRoomCode(new URL(location.href).searchParams.get('room') ?? '');
+  return c.length >= 3 ? c : null;
+})();
 
 // ---------------------------------------------------------------------------
 // Shell
@@ -162,7 +177,7 @@ function playerName(): string {
 }
 
 function showMenu(): void {
-  teardown();
+  void leaveRoom();
   const seats = store.get('seats', 6);
   screen.innerHTML = `
     <section class="menu">
@@ -216,7 +231,7 @@ function showMenu(): void {
 // ---------------------------------------------------------------------------
 
 function startSolo(seatCount: number): void {
-  teardown();
+  void leaveRoom();
   const seed = Math.floor(Math.random() * 0xffffffff) >>> 0;
   const names = shuffle(makeRng(seed), BOT_NAMES).slice(0, seatCount - 1);
   const specs = [
@@ -239,92 +254,215 @@ function startSolo(seatCount: number): void {
 // ---------------------------------------------------------------------------
 
 function showRoomEntry(): void {
-  teardown();
-  const linked = new URL(location.href).searchParams.get('room');
-  // A deep link drops you straight in — but only once.
-  if (linked && !deepLinkUsed) {
-    deepLinkUsed = true;
-    joinRoom(normalizeRoomCode(linked));
+  void leaveRoom();
+
+  // Arrived on an invite link? Drop straight into that room — once, ever.
+  if (pendingRoom) {
+    const code = pendingRoom;
+    pendingRoom = null;
+    void openRoom(code);
     return;
   }
-  createRoomEntry({
+
+  roomEntry = createRoomEntry({
     container: screen,
     title: 'Play with friends',
     subtitle: 'Nightwire needs 4–10 players. Start a room, or type a friend’s code.',
-    onSubmit: (code) => joinRoom(code),
+    onSubmit: (code) => void openRoom(code),
     onCancel: () => showMenu(),
   });
 }
 
-function joinRoom(code: string): void {
-  teardown();
+/**
+ * Join a room ONCE and hold it for as long as the player stays. Every table —
+ * the first and every rematch — is dealt inside this one Net via `rounds`.
+ * Nothing here may call net.leave() except the trip back to the menu.
+ */
+async function openRoom(code: string): Promise<void> {
+  leaveRoom();
+  // A previous room may still be tearing down (Trystero defers it ~99ms).
+  // Joining inside that window returns the dying room, so wait it out.
+  await roomTeardown;
+  roomCode = code;
   setRoomInUrl(code);
 
-  net = createNet(
-    { appId: SLUG, roomId: code },
-    {
-      // Wiring these is the whole host-transfer contract. A bare createNet()
-      // here would make a takeover impossible.
-      onHostChange: (_id, isSelfHost) => session?.setHost(isSelfHost),
-      onPeerLeave: (id) => session?.onPeerLeave(id),
-      onPeers: () => session?.onRoster(),
-    },
-  );
+  try {
+    net = createNet(
+      { appId: SLUG, roomId: code },
+      {
+        // Wiring these is the whole host-transfer contract. A bare createNet()
+        // here would make a takeover impossible.
+        onHostChange: () => syncAuthority(),
+        onPeerLeave: (id) => {
+          session?.onPeerLeave(id);
+          syncAuthority();
+        },
+        onPeers: () => {
+          session?.onRoster();
+          syncAuthority();
+        },
+      },
+    );
+  } catch (err) {
+    // The room is somehow still held (see engine/net.ts). Never strand the
+    // player on a blank screen — say so and go back somewhere they can act.
+    console.error(err);
+    flash('Could not open that room — try again');
+    showMenu();
+    return;
+  }
 
-  // Channels are registered up front on every peer so they exist before the
-  // first message can arrive. All names are <= 12 bytes.
-  const sendSnap = net.channel<PublicState>('snap', (pub) => session?.onSnapshot(pub));
-  const sendPriv = net.channel<PrivateView>('priv', (p) => session?.onPrivate(p));
-  const sendAct = net.channel<Action>('act', (a, from) => session?.onAction(from, a));
-  const sendRq = net.channel<null>('rq', (_d, from) => session?.onRoleRequest(from));
-  const sendRl = net.channel<{ role: Role }>('rl', (m, from) => session?.onRoleReply(from, m.role));
+  rounds = createRounds({
+    net,
+    playerName: playerName(),
+    minPlayers: MIN_SEATS,
+    onRound: ({ seed, players, isHost }) => startTable(seed, players, isHost),
+  });
 
-  const transport: Transport = {
-    sendSnap: (pub) => sendSnap(pub),
-    sendPriv: (to, priv) => sendPriv(priv, to),
-    sendAct: (a) => sendAct(a),
-    requestRoles: () => sendRq(null),
-    sendRole: (to, role) => sendRl({ role }, to),
-  };
+  showLobby();
+}
 
-  createLobby({
+function showLobby(): void {
+  if (!net || !rounds) return;
+  teardownGame();
+  lobby = createLobby({
     container: screen,
     net,
-    roomCode: code,
-    playerName: playerName(),
+    rounds,
+    roomCode,
     minPlayers: MIN_SEATS,
     maxPlayers: 10,
     note: 'The host’s browser deals the roles — play with people you’d hand a deck of cards.',
-    onCancel: () => {
-      showMenu();
+    onCancel: () => showMenu(),
+  });
+}
+
+/**
+ * Register this round's receivers on the shared Net, and hand back the detach.
+ *
+ * The Net now outlives every round, and channel() fans out to all subscribers —
+ * so a finished round that stays subscribed keeps answering: the old host would
+ * resolve the next table's actions against the dead one and broadcast snapshots
+ * of it over the live game.
+ *
+ * The role re-attest deliberately does NOT use 'rq' — that name belongs to
+ * rematch.ts's resync, and with fan-out both handlers fire, so every resync poll
+ * would make each peer publish its secret role to the room.
+ */
+function wireRound(n: Net): { transport: Transport; off: () => void } {
+  const sendSnap = n.channel<PublicState>(GAME_CHANNELS.snap, (pub) => session?.onSnapshot(pub));
+  const sendPriv = n.channel<PrivateView>(GAME_CHANNELS.priv, (p) => session?.onPrivate(p));
+  const sendAct = n.channel<Action>(GAME_CHANNELS.act, (a, from) => session?.onAction(from, a));
+  const sendRq = n.channel<null>(GAME_CHANNELS.roleRequest, (_d, from) => session?.onRoleRequest(from));
+  const sendRl = n.channel<{ role: Role }>(GAME_CHANNELS.roleReply, (m, from) =>
+    session?.onRoleReply(from, m.role),
+  );
+
+  return {
+    transport: {
+      sendSnap: (pub) => sendSnap(pub),
+      sendPriv: (to, priv) => sendPriv(priv, to),
+      sendAct: (a) => sendAct(a),
+      requestRoles: () => sendRq(null),
+      sendRole: (to, role) => sendRl({ role }, to),
     },
-    onStart: ({ seed, players, isHost }) => {
-      session = new Session({
-        selfId: net!.selfId,
-        solo: false,
-        transport,
-        onPublic: handlePublic,
-        onPrivate: handlePrivate,
-        onFlash: (msg) => flash(msg),
-      });
-      mountGame(net!.selfId, () => showMenu());
-      if (isHost) {
-        session.startAsHost(
-          seed,
-          players.map((p) => ({ id: p.id, name: p.name, bot: false })),
-        );
-      } else {
-        // Clients hold no authoritative state — they render snapshots, and run
-        // the clock only so a promotion can time out cleanly.
-        session.start();
-      }
+    off: () => {
+      sendSnap.off();
+      sendPriv.off();
+      sendAct.off();
+      sendRq.off();
+      sendRl.off();
     },
+  };
+}
+
+function startTable(seed: number, players: RoundPlayer[], isHost: boolean): void {
+  if (!net) return;
+  teardownGame();
+  lobby?.destroy();
+  lobby = null;
+
+  // The roster arrives frozen from the host, identical bytes on every peer, so
+  // seat N is the same player everywhere — and it is what authority follows.
+  if (!players.some((p) => p.id === net!.selfId)) {
+    // Not dealt into this table (we joined mid-deal). Wait for the next one
+    // rather than sitting at a table we hold no seat at.
+    showLobby();
+    flash('Next round — you’re in the lobby');
+    return;
+  }
+
+  const wire = wireRound(net);
+  unwireRound = wire.off;
+
+  session = new Session({
+    selfId: net.selfId,
+    solo: false,
+    transport: wire.transport,
+    roster: players.map((p) => p.id),
+    onPublic: handlePublic,
+    onPrivate: handlePrivate,
+    onFlash: (msg) => flash(msg),
+    onStranded: () => {
+      rounds?.finish();
+      showLobby();
+    },
+  });
+  mountGame(net.selfId, playAgain);
+
+  if (isHost) {
+    session.startAsHost(
+      seed,
+      players.map((p) => ({ id: p.id, name: p.name, bot: false })),
+    );
+  } else {
+    // Clients hold no authoritative state — they render snapshots, and run
+    // the clock only so a promotion can time out cleanly.
+    session.start();
+  }
+  syncAuthority();
+}
+
+/**
+ * Hand the deal to the right seat. net.ts elects across the whole room, but a
+ * spectator who followed the invite link mid-game must never be handed a table
+ * they hold no state for — authority follows the frozen roster (session.ts).
+ */
+function syncAuthority(): void {
+  if (!net || !session) return;
+  session.setHost(session.authorityFor(net.peers()) === net.selfId);
+}
+
+/**
+ * "Play again" in a room. NOT a rejoin: the mesh stays exactly as it is and this
+ * only registers a vote — the next table is dealt underneath us once everyone
+ * has voted. Leaving and rejoining here is what used to strand every player
+ * alone as their own host (see engine/net.ts).
+ */
+function playAgain(): void {
+  if (!rounds) return;
+  if (rounds.state().voted) rounds.unvote();
+  else rounds.vote();
+  paintAgain();
+}
+
+function paintAgain(): void {
+  if (!rounds || !gameUi) return;
+  const s = rounds.state();
+  const waiting = s.present.length - s.votes.length;
+  gameUi.setAgain({
+    label: s.voted ? 'Ready — waiting…' : 'Play again',
+    status: s.voted
+      ? waiting > 0
+        ? `Waiting for ${waiting} more player${waiting === 1 ? '' : 's'}…`
+        : 'Dealing…'
+      : `${s.votes.length}/${s.present.length} ready for another table`,
   });
 }
 
 window.addEventListener('beforeunload', () => {
   try {
-    net?.leave();
+    void net?.leave();
   } catch {
     /* leaving is best-effort */
   }
@@ -406,6 +544,12 @@ function handlePublic(pub: PublicState): void {
         if (c) fx?.burst(c[0], c[1], '#ffb347', 40);
       }
       recordResult(pub.winner, priv?.role);
+      // Reopen voting in the room. The table is done; the mesh is not.
+      rounds?.finish();
+      if (rounds) {
+        paintAgain();
+        againTick = setInterval(paintAgain, 500);
+      }
     }
   }
   prevPub = pub;
@@ -443,7 +587,8 @@ function flash(msg: string): void {
   setTimeout(() => el?.classList.remove('show'), 3200);
 }
 
-function teardown(): void {
+/** Drop the table, keeping the room (and its Net) alive for the next one. */
+function teardownGame(): void {
   session?.destroy();
   session = null;
   gameUi?.destroy();
@@ -451,20 +596,50 @@ function teardown(): void {
   fx?.destroy();
   fx = null;
   prevPub = null;
-  try {
-    net?.leave();
-  } catch {
-    /* best-effort */
-  }
-  net = null;
+  unwireRound?.();
+  unwireRound = null;
+  if (againTick) clearInterval(againTick);
+  againTick = null;
   screen.innerHTML = '';
+}
+
+/** Resolves once any in-flight room teardown has fully finished. */
+let roomTeardown: Promise<void> = Promise.resolve();
+
+/**
+ * Leave the room for good. Only ever on the way to the menu — NEVER between
+ * tables. `net.leave()` is awaited because Trystero keeps the room in its cache
+ * until teardown finishes; joining again before then hands back the dying room
+ * and every peer ends up alone, elected host of nothing. A rematch keeps the Net
+ * and deals a new round inside it (engine/rematch.ts).
+ */
+function leaveRoom(): Promise<void> {
+  teardownGame();
+  lobby?.destroy();
+  lobby = null;
+  roomEntry?.destroy();
+  roomEntry = null;
+  rounds?.destroy();
+  rounds = null;
+  roomCode = '';
+  const leaving = net;
+  net = null;
+  // CHAIN, never replace. leaveRoom() runs again on the way into a new room, and
+  // by then `net` is already null — replacing the promise there would hand back
+  // an instantly-resolved teardown while the real one was still inside
+  // Trystero's 99ms window, and the next createNet would throw.
+  roomTeardown = roomTeardown.then(() => leaving?.leave()).then(
+    () => undefined,
+    () => undefined,
+  );
+  return roomTeardown;
 }
 
 // ---------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------
 
-if (new URL(location.href).searchParams.get('room')) {
+if (pendingRoom) {
   // Arriving on an invite link goes straight to that room.
   showRoomEntry();
 } else {
