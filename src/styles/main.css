@@ -997,6 +997,236 @@ a {
   width: 100%;
 }
 
+/* ---- public / private ------------------------------------------------------ */
+/* The IP disclosure sits AT the opt-in, not in About: it is the whole cost of a
+   public room, and nobody opens About before tapping a button. */
+.re-note {
+  color: var(--dim);
+  font-size: 0.72rem;
+  line-height: 1.5;
+  margin: 8px 0 0;
+  text-align: left;
+}
+
+.vis {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.vis-name {
+  font-weight: 800;
+  font-size: 0.82rem;
+}
+
+.vis-meta {
+  font-size: 0.66rem;
+}
+
+/* ---- public room list ------------------------------------------------------ */
+.re-rooms {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.re-room {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 10px;
+  align-items: baseline;
+  text-align: left;
+  min-height: 46px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--ink-3);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.re-room:hover {
+  border-color: var(--teal);
+}
+
+.re-room:active {
+  transform: translateY(1px);
+}
+
+.re-room-host {
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.re-room-code {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.14em;
+  color: var(--amber);
+}
+
+.re-room-note,
+.re-room-meta {
+  color: var(--dim);
+  font-size: 0.72rem;
+}
+
+.re-room-meta {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.re-room-state {
+  grid-column: 1 / -1;
+  font-size: 0.66rem;
+  color: var(--amber);
+  margin-top: 2px;
+}
+
+.re-room.playing {
+  opacity: 0.8;
+}
+
+.re-empty {
+  color: var(--dim);
+  font-size: 0.8rem;
+  line-height: 1.55;
+  margin: 4px 0;
+  text-align: left;
+}
+
+/* ---- mode picker ----------------------------------------------------------- */
+.modes {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  align-items: stretch;
+  margin: 14px 0 0;
+}
+
+.modes .mode-blurb {
+  grid-column: 1 / -1;
+  margin: 2px 0 0;
+  text-align: center;
+  font-size: 0.72rem;
+  color: var(--dim);
+  min-height: 16px;
+}
+
+/* The visibility chips are deliberately the same object as a mode chip — same
+   grid, same weight. A public room is a choice about the room, not a warning. */
+.mode-chip,
+.vis-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: center;
+  justify-content: center;
+  min-height: 46px;
+  padding: 10px 6px;
+  border-radius: 12px;
+  background: var(--ink-3);
+  border: 1px solid var(--line);
+  color: var(--dim);
+  font: inherit;
+  cursor: pointer;
+}
+
+.mode-chip.on,
+.vis-chip.on {
+  color: var(--text);
+  border-color: var(--teal);
+  box-shadow: 0 0 0 2px rgba(63, 208, 201, 0.3);
+}
+
+.mode-name {
+  font-weight: 800;
+  font-size: 0.82rem;
+}
+
+.mode-meta {
+  font-size: 0.66rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.mode-note {
+  margin: 12px 0 0;
+  text-align: center;
+  font-size: 0.72rem;
+  color: var(--dim);
+}
+
+.mode-note strong {
+  color: var(--text);
+}
+
+.mode-note.pub {
+  color: var(--amber);
+}
+
+/* ---- countdown ------------------------------------------------------------- */
+/* Sits over the table so the ring is readable before the first night starts —
+   the whole point is that everyone gets the same look at it. */
+.cd-host {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 40;
+}
+
+.countdown {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(11, 14, 23, 0.55);
+}
+
+.cd-num {
+  font-size: clamp(64px, 22vw, 132px);
+  font-weight: 800;
+  line-height: 1;
+  color: var(--teal);
+  text-shadow: 0 6px 30px rgba(63, 208, 201, 0.45);
+  font-variant-numeric: tabular-nums;
+}
+
+.cd-num.cd-go {
+  color: var(--amber);
+  text-shadow: 0 6px 30px rgba(255, 179, 71, 0.45);
+  animation: cd-pop 420ms ease-out;
+}
+
+.cd-num.cd-tick {
+  animation: cd-pop 900ms ease-out;
+}
+
+.countdown.reduced .cd-num {
+  animation: none;
+}
+
+@keyframes cd-pop {
+  0% {
+    transform: scale(1.5);
+    opacity: 0;
+  }
+  18% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(0.94);
+    opacity: 0.85;
+  }
+}
+
 /* An animated ring — a still "waiting…" reads as a hung page. */
 .spinner {
   width: 16px;

@@ -41,6 +41,7 @@ import {
   type PrivateView,
   type Role,
   type SeatSpec,
+  type TableRules,
 } from './game';
 import { chooseProbe, chooseCut, chooseClaim, chooseVote, botRng } from './bot';
 import { makeRng } from './engine/rng';
@@ -94,6 +95,12 @@ export interface SessionOpts {
   now?: () => number;
   /** Per-phase deadlines in ms. Solo has none — think as long as you like. */
   deadlines?: { night: number; dawn: number; vote: number };
+  /**
+   * The host's mode, as ghost count + nights (see modes.ts). Host-only: it is
+   * consumed by deal(), and a client rebuilds both from the snapshot instead —
+   * which is why a promoted host needs no copy of the mode to take over.
+   */
+  rules?: TableRules;
 }
 
 const DEFAULT_DEADLINES = { night: 45_000, dawn: 25_000, vote: 45_000 };
@@ -220,7 +227,7 @@ export class Session {
   /** Deal the table and become the authority. */
   startAsHost(seed: number, specs: readonly SeatSpec[]): void {
     this.isHost = true;
-    this.state = deal(seed, specs);
+    this.state = deal(seed, specs, this.opts.rules);
     this.myRole = seatOf(this.state, this.selfId)?.role ?? null;
     this.phaseStartedAt = this.now();
     this.publish();

@@ -16,18 +16,26 @@ import { createRounds, type Rounds, type RoundPlayer } from './engine/rematch';
 import {
   clearRoomInUrl,
   createLobby,
+  createListing,
   createRoomEntry,
   normalizeRoomCode,
   setRoomInUrl,
+  P2P_IP_NOTE,
+  type BoardAccess,
+  type Listing,
 } from './engine/lobby';
+import { createNoticeboard, type Noticeboard, type PublicRoom } from './engine/noticeboard';
 import { Session, GAME_CHANNELS, type Action, type Transport } from './session';
-import { createGameUi, type GameUi } from './ui';
+import { createGameUi, escapeHtml, type GameUi } from './ui';
 import { createFx, type Fx } from './fx';
+import { createCountdown } from './countdown';
 import { BOT_NAMES } from './bot';
 import { shuffle, makeRng } from './engine/rng';
 import { MIN_SEATS, type PublicState, type PrivateView, type Role } from './game';
+import { DEFAULT_MODE, MODE_LIST, modeMeta, modeOf, rulesFor, type ModeId } from './modes';
 
 const SLUG = 'nightwire';
+const MAX_SEATS_MP = 10;
 
 // Before anything renders: iOS ignores the viewport meta's user-scalable=no, so
 // a double-tap or a pinch zooms into a live table with no way back out.
@@ -40,7 +48,7 @@ const app = document.querySelector<HTMLElement>('#app')!;
 
 let net: Net | null = null;
 let rounds: Rounds | null = null;
-let lobby: { destroy: () => void } | null = null;
+let lobby: { destroy: () => void; repaint: () => void } | null = null;
 let roomEntry: { destroy: () => void } | null = null;
 let session: Session | null = null;
 let gameUi: GameUi | null = null;
@@ -49,7 +57,26 @@ let prevPub: PublicState | null = null;
 /** Detaches THIS round's receivers from the shared Net (see wireRound). */
 let unwireRound: (() => void) | null = null;
 let againTick: ReturnType<typeof setInterval> | null = null;
+let countdown: { cancel: () => void } | null = null;
+let listing: Listing | null = null;
+let listingTick: ReturnType<typeof setInterval> | null = null;
+/** The room we are in, and whether it is on the public list. Private by default. */
 let roomCode = '';
+let roomPublic = false;
+
+/** The mode this player last chose. The HOST's choice is what a room plays. */
+let modeId: ModeId = modeOf(store.get<string>('mode', DEFAULT_MODE)).id;
+
+function setMode(id: ModeId): void {
+  modeId = modeOf(id).id;
+  store.set('mode', modeId);
+}
+
+// Optional call, not a bare one: matchMedia is not universal (jsdom has none),
+// and the whole module is imported for its side effects — an exception here
+// takes the entire app down before a single screen paints, to decide whether an
+// animation plays. Absent means animate.
+const reducedMotion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
 
 /** A ?room= in the URL (an invite link) is honoured ONCE. joinRoom() also writes
  *  the code into the URL, so without this the room's creator would find "Play
@@ -172,11 +199,172 @@ const ABOUT = `
     can peek at the deck. No other player ever receives anyone else's role, and if the host leaves,
     the new host rebuilds the table by asking each player what they are. Making this
     host-proof would need a full mental-poker protocol; we'd rather tell you plainly than pretend.</p>
+  <h3>Public rooms and your IP address</h3>
+  <p>Rooms are <strong>private by default</strong>: only people you send the code to can find them.
+    If you list a room publicly — or tap “Browse public games” — your browser joins a shared
+    peer-to-peer list, and connecting to a peer means exchanging IP addresses. So on the public list,
+    strangers can see your IP; in a private room, only the friends you invited can. That is true of
+    any peer-to-peer game and there is no server here to hide behind. It is opt-in on both sides,
+    nothing joins the list until you tap it, and your browser leaves the list as soon as you stop
+    browsing or your table starts or goes private.</p>
   <h3>Privacy</h3>
   <p>No cookies, no fingerprinting, no third-party fonts. Anonymous, cookie-less page-view counts
     via Cloudflare Web Analytics.</p>
   <p>Built by <a href="https://benrichardson.dev/" target="_blank" rel="noopener">benrichardson.dev</a>
     · <a href="https://hub.benrichardson.dev" target="_blank" rel="noopener">more games, tools &amp; sites</a></p>`;
+
+// ---------------------------------------------------------------------------
+// Mode picker
+// ---------------------------------------------------------------------------
+
+/** `seats` sizes the meta line: "nights" depends on how many of you there are. */
+function modePicker(seats: number): string {
+  const m = modeOf(modeId);
+  return `
+    <div class="modes" role="radiogroup" aria-label="Table mode">
+      ${MODE_LIST.map(
+        (x) => `<button class="mode-chip${x.id === m.id ? ' on' : ''}" type="button"
+          role="radio" aria-checked="${x.id === m.id}" data-mode="${x.id}">
+          <span class="mode-name">${escapeHtml(x.name)}</span>
+          <span class="mode-meta">${escapeHtml(modeMeta(x, seats))}</span>
+        </button>`,
+      ).join('')}
+      <p class="mode-blurb">${escapeHtml(m.blurb)}</p>
+    </div>`;
+}
+
+function modeNote(seats: number): string {
+  // The HOST's gossiped choice — never our own local pick. Rendering `modeId`
+  // here would confidently tell a guest "Host picked Blackout" while the host
+  // was actually setting up an Inquest.
+  const hostOpts = rounds?.state().hostOpts as { mode?: unknown; pub?: unknown } | null | undefined;
+  if (hostOpts == null) return `<p class="mode-note">Waiting for the host’s pick…</p>`;
+  const m = modeOf(hostOpts.mode);
+  return (
+    `<p class="mode-note">Host picked <strong>${escapeHtml(m.name)}</strong> · ${escapeHtml(
+      modeMeta(m, seats),
+    )}</p>` +
+    // Guests play at the host's table too. Someone who was handed an invite link
+    // has no way of knowing strangers can walk in unless we say so.
+    (hostOpts.pub
+      ? `<p class="mode-note pub">This room is listed publicly — anyone browsing can join.</p>`
+      : '')
+  );
+}
+
+function wireModePicker(repaint: () => void): void {
+  for (const btn of screen.querySelectorAll<HTMLButtonElement>('.mode-chip')) {
+    btn.addEventListener('click', () => {
+      setMode(btn.dataset.mode as ModeId);
+      play('select');
+      repaint();
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Public / private
+// ---------------------------------------------------------------------------
+
+/** The host's own control, in the lobby: a room can be taken off the list again. */
+function visibilityPicker(): string {
+  const chip = (pub: boolean, name: string, meta: string): string =>
+    `<button class="vis-chip${roomPublic === pub ? ' on' : ''}" type="button"
+      role="radio" aria-checked="${roomPublic === pub}" data-pub="${pub ? 1 : 0}">
+      <span class="vis-name">${escapeHtml(name)}</span>
+      <span class="vis-meta">${escapeHtml(meta)}</span>
+    </button>`;
+  return `
+    <div class="vis" role="radiogroup" aria-label="Who can join">
+      ${chip(false, 'Private', 'Invite only')}
+      ${chip(true, 'Public', 'Listed for anyone')}
+    </div>
+    <p class="re-note">${escapeHtml(P2P_IP_NOTE)}</p>`;
+}
+
+function wireVisibility(repaint: () => void): void {
+  for (const btn of screen.querySelectorAll<HTMLButtonElement>('.vis-chip')) {
+    btn.addEventListener('click', () => {
+      roomPublic = btn.dataset.pub === '1';
+      play('select');
+      // Immediately, not on the next tick: "private" has to mean off the list
+      // now, not within a second.
+      syncListing();
+      repaint();
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The public room list
+//
+// At most one board, held only while something is actually using it — browsing
+// the list, or listing our own room. It is a mesh of STRANGERS (see P2P_IP_NOTE),
+// so it is never opened by the page loading and never left running behind a
+// screen the player has walked away from.
+// ---------------------------------------------------------------------------
+
+let board: Noticeboard | null = null;
+let boardRooms: ((rooms: PublicRoom[]) => void) | null = null;
+/** Serialises open/close. net.ts throws if the board's room is rejoined while
+ *  the last one is still tearing down, and browse → back → browse is two taps. */
+let boardQueue: Promise<void> = Promise.resolve();
+
+function onBoard(then: () => void): Promise<void> {
+  boardQueue = boardQueue
+    .then(() => {
+      board ??= createNoticeboard({ appId: SLUG, onRooms: (r) => boardRooms?.(r) });
+      then();
+    })
+    .then(
+      () => undefined,
+      (e) => console.error(e),
+    );
+  return boardQueue;
+}
+
+const boardAccess: BoardAccess = {
+  open(onRooms) {
+    boardRooms = onRooms;
+    // Hand over whatever is already known so the list is not blank for a cycle.
+    return onBoard(() => onRooms(board!.rooms()));
+  },
+  announce(ad) {
+    return onBoard(() => board!.announce(ad));
+  },
+  close() {
+    boardRooms = null;
+    const b = board;
+    board = null;
+    if (!b) return;
+    // CHAIN, never replace — same trap as roomTeardown below.
+    boardQueue = boardQueue.then(() => b.destroy()).then(
+      () => undefined,
+      () => undefined,
+    );
+  },
+};
+
+/** Feed engine/lobby.ts's roomAd() rule the room's current truth. It decides. */
+function syncListing(): void {
+  if (!listing) return;
+  if (!net || !rounds) {
+    listing.close();
+    return;
+  }
+  const s = rounds.state();
+  listing.sync({
+    isPublic: roomPublic,
+    isHost: net.isHost(),
+    inLobby: !!lobby,
+    playing: s.phase === 'playing',
+    code: roomCode,
+    host: playerName(),
+    players: s.present.length,
+    max: MAX_SEATS_MP,
+    note: modeOf(modeId).name,
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Menu
@@ -207,6 +395,7 @@ function showMenu(): void {
           </select>
         </label>
       </div>
+      ${modePicker(seats)}
 
       <div class="menu-alt">
         <button class="btn" data-friends>Play with friends</button>
@@ -218,7 +407,13 @@ function showMenu(): void {
     </section>`;
 
   const sel = screen.querySelector<HTMLSelectElement>('[data-seats]')!;
-  sel.addEventListener('change', () => store.set('seats', Number(sel.value)));
+  sel.addEventListener('change', () => {
+    store.set('seats', Number(sel.value));
+    // The chips read "N nights", and N moves with the table size — repaint or
+    // they quietly lie about the game you are one tap from starting.
+    showMenu();
+  });
+  wireModePicker(() => showMenu());
   screen.querySelector('[data-solo]')?.addEventListener('click', () => {
     play('select');
     startSolo(Number(sel.value));
@@ -249,9 +444,15 @@ function startSolo(seatCount: number): void {
     ...names.map((n, i) => ({ id: `bot${i}`, name: n, bot: true })),
   ];
 
+  // Solo plays the local pick — there is no host to defer to. The deadlines are
+  // still passed for completeness; Session ignores them in solo, because nobody
+  // is waiting on you.
+  const mode = modeOf(modeId);
   session = new Session({
     selfId: 'you',
     solo: true,
+    rules: rulesFor(mode, seatCount),
+    deadlines: mode.deadlines,
     onPublic: handlePublic,
     onPrivate: handlePrivate,
   });
@@ -271,15 +472,18 @@ function showRoomEntry(): void {
   if (pendingRoom) {
     const code = pendingRoom;
     pendingRoom = null;
-    void openRoom(code, false);
+    void openRoom(code, false, false);
     return;
   }
 
+  // Handing the entry `board` is what makes public rooms exist at all — it does
+  // not join anything until the player taps Browse.
   roomEntry = createRoomEntry({
     container: screen,
     title: 'Play with friends',
     subtitle: 'Nightwire needs 4–10 players. Start a room, or type a friend’s code.',
-    onSubmit: (code, created) => void openRoom(code, created),
+    board: boardAccess,
+    onSubmit: (code, created, isPublic) => void openRoom(code, created, isPublic),
     onCancel: () => showMenu(),
   });
 }
@@ -289,13 +493,18 @@ function showRoomEntry(): void {
  * the first and every rematch — is dealt inside this one Net via `rounds`.
  * Nothing here may call net.leave() except the trip back to the menu.
  */
-async function openRoom(code: string, created: boolean): Promise<void> {
+async function openRoom(code: string, created: boolean, isPublic: boolean): Promise<void> {
   leaveRoom();
   // A previous room may still be tearing down (Trystero defers it ~99ms).
   // Joining inside that window returns the dying room, so wait it out.
   await roomTeardown;
-  roomCode = code;
+  // The public flag stays OUT of the URL. It is the host's live choice, not a
+  // property of the code: baked into an invite link it would survive the host
+  // flipping the room private, and every guest who forwarded the link would be
+  // handing on a claim that is no longer true.
   setRoomInUrl(code);
+  roomCode = code;
+  roomPublic = created && isPublic;
 
   try {
     net = createNet(
@@ -330,8 +539,18 @@ async function openRoom(code: string, created: boolean): Promise<void> {
     net,
     playerName: playerName(),
     minPlayers: MIN_SEATS,
-    onRound: ({ seed, players, isHost }) => startTable(seed, players, isHost),
+    // Only the host's pick counts, and it travels frozen with the start — a mode
+    // each peer read from its own UI is a mode two peers can disagree about.
+    // `pub` rides along so a guest can see that strangers may walk in; it is
+    // gossiped with presence, so it is live rather than a claim from join time.
+    roundOpts: () => ({ mode: modeId, pub: roomPublic }),
+    onRound: ({ seed, players, isHost, opts }) => startTable(seed, players, isHost, opts),
   });
+
+  listing = createListing(boardAccess);
+  // Player counts move, the host can flip the room private, and the host role
+  // itself can transfer mid-lobby. Poll one rule rather than hunt every edge.
+  listingTick = setInterval(syncListing, 1000);
 
   showLobby();
 }
@@ -345,10 +564,21 @@ function showLobby(): void {
     rounds,
     roomCode,
     minPlayers: MIN_SEATS,
-    maxPlayers: 10,
+    maxPlayers: MAX_SEATS_MP,
     note: 'The host’s browser deals the roles — play with people you’d hand a deck of cards.',
+    // Only the host chooses; everyone else sees what they are about to play, so
+    // nobody is surprised by a three-night Blackout they did not pick.
+    modeSlot: () => {
+      const seats = Math.max(MIN_SEATS, rounds!.state().present.length);
+      return net!.isHost() ? modePicker(seats) + visibilityPicker() : modeNote(seats);
+    },
+    onModeMount: () => {
+      wireModePicker(() => lobby?.repaint());
+      wireVisibility(() => lobby?.repaint());
+    },
     onCancel: () => showMenu(),
   });
+  syncListing();
 }
 
 /**
@@ -390,11 +620,15 @@ function wireRound(n: Net): { transport: Transport; off: () => void } {
   };
 }
 
-function startTable(seed: number, players: RoundPlayer[], isHost: boolean): void {
+function startTable(seed: number, players: RoundPlayer[], isHost: boolean, opts: unknown): void {
   if (!net) return;
   teardownGame();
   lobby?.destroy();
   lobby = null;
+  // The table is starting, so the room comes off the list right now — not up to
+  // a tick later, and not "once someone notices". syncListing reads `lobby`,
+  // which is the null above.
+  syncListing();
 
   // The roster arrives frozen from the host, identical bytes on every peer, so
   // seat N is the same player everywhere — and it is what authority follows.
@@ -409,11 +643,19 @@ function startTable(seed: number, players: RoundPlayer[], isHost: boolean): void
   const wire = wireRound(net);
   unwireRound = wire.off;
 
-  session = new Session({
+  // The mode arrives frozen from the host, identical bytes on every peer — but
+  // only the host consumes it. A client rebuilds the ghost count and the night
+  // budget from the snapshot instead, which is exactly why a promoted host needs
+  // no copy of it to take the deal over.
+  const mode = modeOf((opts as { mode?: unknown } | undefined)?.mode);
+
+  const s = new Session({
     selfId: net.selfId,
     solo: false,
     transport: wire.transport,
     roster: players.map((p) => p.id),
+    rules: rulesFor(mode, players.length),
+    deadlines: mode.deadlines,
     onPublic: handlePublic,
     onPrivate: handlePrivate,
     onFlash: (msg) => flash(msg),
@@ -422,19 +664,62 @@ function startTable(seed: number, players: RoundPlayer[], isHost: boolean): void
       showLobby();
     },
   });
+  session = s;
   mountGame(net.selfId, playAgain, true);
 
+  // The Session is wired NOW so no snapshot can arrive before anyone is
+  // listening, but the DEAL waits for GO. Delaying the whole Session instead
+  // would mean a peer whose countdown is throttled (a backgrounded tab) misses
+  // the host's opening snapshot and stares at an empty table until someone acts.
   if (isHost) {
-    session.startAsHost(
-      seed,
-      players.map((p) => ({ id: p.id, name: p.name, bot: false })),
-    );
-  } else {
-    // Clients hold no authoritative state — they render snapshots, and run
-    // the clock only so a promotion can time out cleanly.
-    session.start();
+    runCountdown(() => {
+      s.startAsHost(
+        seed,
+        players.map((p) => ({ id: p.id, name: p.name, bot: false })),
+      );
+      // AFTER the deal, never before: setHost(true) on a host holding no state
+      // and no snapshot is the stranded branch, and it would fire every round.
+      syncAuthority();
+    });
+    return;
   }
+
+  // Clients hold no authoritative state — they render snapshots, and run the
+  // clock only so a promotion can time out cleanly.
+  s.start();
+  runCountdown(() => {});
   syncAuthority();
+}
+
+/** The three beats before the first night. Overlays the table; blocks nothing. */
+function runCountdown(onDone: () => void): void {
+  cancelCountdown();
+  const host = document.createElement('div');
+  host.className = 'cd-host';
+  app.appendChild(host);
+  const cd = createCountdown({
+    root: host,
+    sfx,
+    reducedMotion,
+    onDone: () => {
+      countdown = null;
+      host.remove();
+      onDone();
+    },
+  });
+  // cancel() removes the overlay but not the host we made for it, so wrap it:
+  // a leftover .cd-host is a fixed, full-screen element sitting over the table.
+  countdown = {
+    cancel: () => {
+      cd.cancel();
+      host.remove();
+    },
+  };
+}
+
+function cancelCountdown(): void {
+  countdown?.cancel();
+  countdown = null;
 }
 
 /**
@@ -637,6 +922,7 @@ function flash(msg: string): void {
 
 /** Drop the table, keeping the room (and its Net) alive for the next one. */
 function teardownGame(): void {
+  cancelCountdown();
   session?.destroy();
   session = null;
   gameUi?.destroy();
@@ -669,7 +955,19 @@ function leaveRoom(): Promise<void> {
   roomEntry = null;
   rounds?.destroy();
   rounds = null;
+  // Off the list and off the board, before anything else can go wrong. Leaving
+  // is one of the three ways a room stops being public (the others are going
+  // private and dealing a table) and it is the one where nobody is left to
+  // notice a stale listing.
+  listing?.close();
+  listing = null;
+  if (listingTick) clearInterval(listingTick);
+  listingTick = null;
+  roomPublic = false;
   roomCode = '';
+  // Also covers a board opened by the browse screen: leaveRoom() is on every
+  // path out of it.
+  boardAccess.close();
   // The room is over for us — take the code out of the URL so a refresh, or
   // reopening from the home-screen icon, lands on the menu instead of silently
   // dragging us back into a table we walked away from.

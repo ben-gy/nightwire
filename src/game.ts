@@ -105,15 +105,34 @@ export interface SeatSpec {
 }
 
 /**
+ * The two numbers a mode is allowed to move: how many liars are at the table,
+ * and how many nights the Crew get before the lights go out. Everything else
+ * about a mode is clock, which lives in session.ts.
+ *
+ * Passed in rather than derived here because the HOST's mode decides the table
+ * and it travels frozen with the round start — a peer deriving these from its
+ * own picker would be playing a different game at the same table. modes.ts owns
+ * the mapping (and the clamp that keeps the deal winnable).
+ */
+export interface TableRules {
+  ghosts: number;
+  blackoutAt: number;
+}
+
+/**
  * Deal a table. Deterministic in `seed`: two peers with the same seed produce
  * an identical seating order AND an identical role assignment.
+ *
+ * `rules` defaults to the standard scaling, so a caller with no modes (or a
+ * test) gets the same table it always did.
  */
-export function deal(seed: number, players: readonly SeatSpec[]): GameState {
+export function deal(seed: number, players: readonly SeatSpec[], rules?: TableRules): GameState {
   if (players.length < MIN_SEATS || players.length > MAX_SEATS) {
     throw new Error(`Nightwire needs ${MIN_SEATS}–${MAX_SEATS} seats, got ${players.length}`);
   }
   const rng = makeRng(seed);
-  const ghostCount = ghostCountFor(players.length);
+  const ghostCount = rules?.ghosts ?? ghostCountFor(players.length);
+  const blackoutAt = rules?.blackoutAt ?? blackoutFor(ghostCount);
 
   // Seat everyone in a shuffled ring, then choose the ghosts from a SECOND
   // independent shuffle — so ghost identity is uncorrelated with seat position.
@@ -140,7 +159,7 @@ export function deal(seed: number, players: readonly SeatSpec[]): GameState {
     round: 1,
     phase: 'night',
     cuts: 0,
-    blackoutAt: blackoutFor(ghostCount),
+    blackoutAt,
     ghostCount,
     probes: {},
     readings: {},

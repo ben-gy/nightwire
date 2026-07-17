@@ -84,7 +84,10 @@ interface Seat {
   got: RoundInfo[];
 }
 
-function table(ids: PeerId[], opts: { minPlayers?: number } = {}): Seat[] {
+function table(
+  ids: PeerId[],
+  opts: { minPlayers?: number; modeOf?: (id: PeerId) => string } = {},
+): Seat[] {
   const bus = new Bus();
   return ids.map((id) => {
     const net = mockNet(bus, id);
@@ -93,6 +96,8 @@ function table(ids: PeerId[], opts: { minPlayers?: number } = {}): Seat[] {
       net,
       playerName: id.toUpperCase(),
       minPlayers: opts.minPlayers ?? 2,
+      // Each seat "wants" its own mode; only the host's may reach the table.
+      roundOpts: () => ({ mode: opts.modeOf?.(id) ?? id }),
       onRound: (info) => seat.got.push(info),
     });
     return seat;
@@ -343,5 +348,44 @@ describe('createRounds — teardown', () => {
 
     // A destroyed Rounds must not keep driving a screen that is gone.
     expect(seats[1].got.length).toBe(0);
+  });
+});
+
+describe("createRounds — the host's table, not each peer's", () => {
+  it("gives every peer the HOST's mode, not their own", () => {
+    // Each seat wants a different mode. Only one may win, or two peers deal
+    // different numbers of Ghosts from the same seed and the ledger every peer
+    // is arguing over is not the same ledger.
+    seats = table(['a', 'b', 'c', 'd'], { minPlayers: 4, modeOf: (id) => `mode-${id}` });
+    seats.forEach((s) => s.rounds.vote());
+
+    const opts = seats.map((s) => s.got[0].opts);
+    expect(opts[0]).toEqual(opts[1]);
+    expect(opts[1]).toEqual(opts[2]);
+    expect(opts[2]).toEqual(opts[3]);
+    expect(opts[0]).toEqual({ mode: 'mode-a' }); // 'a' hosts
+  });
+
+  it("re-reads the host's choice for each rematch", () => {
+    let hostMode = 'standard';
+    seats = table(['a', 'b', 'c', 'd'], { minPlayers: 4, modeOf: () => hostMode });
+    seats.forEach((s) => s.rounds.vote());
+    expect(seats[1].got[0].opts).toEqual({ mode: 'standard' });
+
+    // The host switches mode on the results screen; the next table must use it.
+    seats.forEach((s) => s.rounds.finish());
+    hostMode = 'inquest';
+    seats.forEach((s) => s.rounds.vote());
+
+    expect(seats[1].got[1].opts).toEqual({ mode: 'inquest' });
+  });
+
+  it("gossips the host's pick to guests before a table is dealt", () => {
+    // What the lobby renders to a guest. Null would be "waiting for the host";
+    // rendering the guest's OWN pick here is the confident lie this exists to
+    // prevent.
+    seats = table(['a', 'b'], { modeOf: (id) => `mode-${id}` });
+    expect(seats[1].rounds.state().hostOpts).toEqual({ mode: 'mode-a' });
+    expect(seats[0].rounds.state().hostOpts).toEqual({ mode: 'mode-a' });
   });
 });

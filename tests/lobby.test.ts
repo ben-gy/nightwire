@@ -76,6 +76,7 @@ function fakeRounds(): Rounds {
     isHost: true,
     canStart: false,
     startsInMs: null,
+    hostOpts: null,
   };
   return {
     vote() {},
