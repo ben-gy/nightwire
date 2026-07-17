@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="14" fill="#0b0e17"/>
+  <!-- the wire, cut in the middle -->
+  <path d="M6 32 H26" stroke="#3fd0c9" stroke-width="4" stroke-linecap="round"/>
+  <path d="M38 32 H58" stroke="#a882ff" stroke-width="4" stroke-linecap="round"/>
+  <!-- the spark at the cut -->
+  <circle cx="32" cy="32" r="5" fill="#ffb347"/>
+  <circle cx="32" cy="32" r="10" fill="none" stroke="#ffb347" stroke-width="2" opacity="0.45"/>
+  <!-- seats around the table -->
+  <circle cx="16" cy="14" r="3.5" fill="#f2f4ff" opacity="0.8"/>
+  <circle cx="48" cy="14" r="3.5" fill="#f2f4ff" opacity="0.8"/>
+  <circle cx="16" cy="50" r="3.5" fill="#f2f4ff" opacity="0.8"/>
+  <circle cx="48" cy="50" r="3.5" fill="#a882ff"/>
+</svg>
