@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://nightwire.benrichardson.dev/sitemap.xml
