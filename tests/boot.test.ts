@@ -8,6 +8,18 @@
  * screen flow that throws or never paints.
  */
 import { describe, it, expect, vi } from 'vitest';
+
+/**
+ * main.ts fetches TURN credentials at boot and holds the room join until they
+ * land, because Trystero freezes one global connection pool from the first
+ * joinRoom() on the page — relays that arrive after it are relays no peer in the
+ * session ever gets. That ordering is correct and worth the wait in a browser,
+ * but it makes a unit test's "did the lobby paint?" depend on a live HTTPS
+ * round-trip to rt.benrichardson.dev. Stub it: this test is about screen wiring,
+ * and a test that can be failed by someone else's network is not a test.
+ */
+vi.mock('@ben-gy/game-engine/turn', () => ({ getTurnConfig: async () => [] }));
+
 vi.mock('trystero', () => ({
   selfId: 'self-id',
   joinRoom: () => ({

@@ -17,6 +17,15 @@ type Recv = (data: unknown, from: string) => void;
 const recv = new Map<string, Recv>();
 let peerJoin: (id: string) => void = () => {};
 
+/**
+ * main.ts holds the room join until TURN credentials land — Trystero builds one
+ * global connection pool from the first joinRoom() on the page, so relays that
+ * arrive later never reach any peer. Right in a browser; fatal in a test, which
+ * would otherwise sit behind a live HTTPS round-trip that fake timers cannot
+ * advance, and reach the assertions before a single channel exists.
+ */
+vi.mock('@ben-gy/game-engine/turn', () => ({ getTurnConfig: async () => [] }));
+
 vi.mock('trystero', () => ({
   selfId: 'self-id',
   joinRoom: () => ({
