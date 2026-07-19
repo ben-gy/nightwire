@@ -15,8 +15,8 @@ import {
   normalizeRoomCode,
   setRoomInUrl,
 } from '../src/engine/lobby';
-import type { Net } from '../src/engine/net';
-import type { Rounds, RoundsState } from '../src/engine/rematch';
+import type { Net } from '@ben-gy/game-engine/net';
+import type { Rounds, RoundsState } from '@ben-gy/game-engine/rematch';
 
 describe('normalizeRoomCode', () => {
   it('canonicalises a hand-typed code to exactly what the link carries', () => {
@@ -77,6 +77,10 @@ function fakeRounds(): Rounds {
     canStart: false,
     startsInMs: null,
     hostOpts: null,
+    // A peer that missed the start is not in the round it can see running. The
+    // lobby uses this to render "you're in the next one" instead of a dead
+    // screen — which is what "I got ejected" actually looked like.
+    seated: false,
   };
   return {
     vote() {},
@@ -89,7 +93,7 @@ function fakeRounds(): Rounds {
 }
 
 /** `settled` is net.ts's "I have heard from the room" — see hostSettled(). */
-function fakeNet(settled = true): Net {
+function fakeNet(settled = true, onTakeover: () => void = () => {}): Net {
   return {
     selfId: 'a',
     peers: () => ['a'],
@@ -101,6 +105,7 @@ function fakeNet(settled = true): Net {
       const send = (() => {}) as never;
       return send;
     },
+    takeover: onTakeover,
     ping: async () => 0,
     leave: async () => {},
   } as unknown as Net;
@@ -179,6 +184,60 @@ describe('createLobby — an unsettled room is not a hosted room', () => {
     expect(el.querySelector('.lobby-searching')?.textContent ?? '').not.toMatch(/connecting/i);
     expect(el.querySelector('.lobby-badge')?.textContent).toBe('HOST');
     expect(el.querySelector<HTMLButtonElement>('.lobby-ready')!.disabled).toBe(false);
+  });
+});
+
+/**
+ * …and the way OUT of that spinner, which the transport is no longer allowed to
+ * provide for itself.
+ *
+ * net.ts used to self-elect after a couple of seconds of silence, including on a
+ * roster of one. That is what produced the phantom host: a peer alone because
+ * its mesh had not formed decided the room was empty, crowned itself, and later
+ * met the real incumbent and fought it for a live table. So silence on a roster
+ * of one now means "keep waiting", forever, as far as the transport is concerned
+ * — and the ONLY thing that can end that wait is the player saying so. If this
+ * offer disappears, an invite-link guest who arrives first waits on a spinner
+ * that will never resolve.
+ */
+describe('createLobby — a room nobody answered can be claimed, but only by hand', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  function paintAlone(waitMs: number, onTakeover = () => {}): HTMLElement {
+    vi.useFakeTimers();
+    const container = document.createElement('div');
+    const lobby = createLobby({
+      container,
+      net: fakeNet(false, onTakeover),
+      rounds: fakeRounds(),
+      roomCode: 'K7QP',
+      minPlayers: 4,
+    });
+    vi.advanceTimersByTime(waitMs);
+    lobby.destroy();
+    return container;
+  }
+
+  it('offers nothing early — a slow handshake is not an empty room', () => {
+    const el = paintAlone(5000);
+    expect(el.querySelector('.lobby-host')).toBeNull();
+    expect(el.querySelector('.lobby-searching')?.textContent).toMatch(/connecting/i);
+  });
+
+  it('offers to host once the wait is longer than any handshake', () => {
+    const el = paintAlone(16_000);
+    expect(el.querySelector('.lobby-host')).not.toBeNull();
+  });
+
+  it('takes the room only when the player presses it', () => {
+    let claimed = 0;
+    const el = paintAlone(16_000, () => claimed++);
+    expect(claimed).toBe(0); // rendering the offer must not BE the claim
+    el.querySelector<HTMLButtonElement>('.lobby-host')!.click();
+    expect(claimed).toBe(1);
   });
 });
 

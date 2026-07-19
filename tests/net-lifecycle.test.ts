@@ -2,7 +2,7 @@
  * net-lifecycle.test.ts — the tripwire.
  *
  * One invariant, asserted directly: a multiplayer session joins its room ONCE.
- * Every round after the first happens inside that room (see engine/rematch.ts).
+ * Every round after the first happens inside that room (see the engine's rematch.ts).
  *
  * This is the test that would have caught the shipped bug. It needs no relay, no
  * timing model and no browser — it just refuses to let the leave/rejoin pattern
@@ -55,7 +55,7 @@ vi.mock('trystero', () => ({
   },
 }));
 
-const { createNet, netStats, resetNetStats } = await import('../src/engine/net');
+const { createNet, netStats, resetNetStats } = await import('@ben-gy/game-engine/net');
 
 const APP = 'nightwire-lifecycle';
 

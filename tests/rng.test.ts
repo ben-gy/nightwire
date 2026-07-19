@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { makeRng, hashSeed, shuffle, randInt, pick } from '../src/engine/rng';
+import { makeRng, hashSeed, shuffle, randInt, pick } from '@ben-gy/game-engine/rng';
 import { deal, ghostCountFor, blackoutFor } from '../src/game';
 
 const table = (n: number) =>

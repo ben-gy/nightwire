@@ -1,7 +1,14 @@
 /**
  * sound.ts — procedural sound effects via the Web Audio API. Zero asset files.
- * Copied from the gh-game-factory patterns/ engine; PATCHES extended with
- * Nightwire's own cues. Call sfx.unlock() from the first user gesture.
+ * Call sfx.unlock() from the first user gesture.
+ *
+ * Stays game-side rather than importing @ben-gy/game-engine/sound: the package's
+ * SfxName is a closed union of arcade cues (coin/jump/hit/explosion/powerup) and
+ * createSfx() takes no patch overrides, so Nightwire's vocabulary — probe, cut,
+ * claim, vote, eject, ghost, crew, tick — cannot be expressed through it. The
+ * oscillator plumbing also carries try/catch hardening the package lacks: a cue
+ * that throws (a suspended context on iOS, a blocked AudioContext) must never be
+ * able to take a live table down.
  */
 
 export type SfxName =

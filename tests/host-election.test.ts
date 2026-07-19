@@ -20,7 +20,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Net } from '../src/engine/net';
+import type { Net } from '@ben-gy/game-engine/net';
 
 interface Wire {
   peers: Map<string, Room>;
@@ -111,7 +111,7 @@ async function peer(id: string, opts: { claimHost?: boolean } = {}): Promise<Net
       return room;
     },
   }));
-  const mod = await import('../src/engine/net');
+  const mod = await import('@ben-gy/game-engine/net');
   return mod.createNet({ appId: 'test', roomId: 'R', claimHost: opts.claimHost });
 }
 
@@ -183,7 +183,13 @@ describe('host election — nobody hosts a mesh that has not formed', () => {
     connect('a', 'b');
     // Neither claimed (both arrived via a link into an empty room). They must
     // not deadlock waiting for an incumbent that does not exist.
-    vi.advanceTimersByTime(2600);
+    //
+    // The window is SETTLE_MS = 6s now, up from 2.5s, and it re-arms on every
+    // new connection while unsettled. That is the point: a just-opened channel
+    // means an incumbent's announce may still be in flight, and the old 2.5s
+    // was short enough that a joiner on a slow handshake declared the room
+    // empty and elected itself over a host that was right there.
+    vi.advanceTimersByTime(6100);
     expect(a.isHost()).toBe(true); // min-id, agreed by both
     expect(b.isHost()).toBe(false);
     expect(b.host()).toBe('a');

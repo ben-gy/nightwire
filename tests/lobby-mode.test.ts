@@ -35,8 +35,15 @@ vi.mock('trystero', () => ({
   }),
 }));
 
-/** Hand the room to 'aaa' the way a real incumbent announces itself. */
-const cedeHostTo = (id: string): void => recv.get('__h')!({ host: id }, id);
+/**
+ * Hand the room to 'aaa' the way a real incumbent announces itself.
+ *
+ * Claims are epoch-ordered now: higher term wins, equal term breaks by min-id.
+ * We minted this room at term 1 and so did 'aaa', so this is the equal-term case
+ * and 'aaa' takes it on id. The term is not optional — net.ts drops an announce
+ * without one, which is what makes an untermed claim unable to move a room.
+ */
+const cedeHostTo = (id: string): void => recv.get('__h')!({ host: id, epoch: 1 }, id);
 
 /** The host gossips its lobby settings with presence (rematch.ts's 'rv'). */
 const hostGossips = (opts: unknown): void =>

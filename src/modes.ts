@@ -16,7 +16,7 @@
  *     into actually cross-examining it.
  *
  * The host picks; the choice travels frozen inside the round start (see
- * engine/rematch.ts), so every peer plays the same table for the same length.
+ * the engine's rematch.ts), so every peer plays the same table for the same length.
  * A mode each peer read from its own UI is a mode two peers can disagree about.
  */
 

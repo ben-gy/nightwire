@@ -44,7 +44,7 @@ import {
   type TableRules,
 } from './game';
 import { chooseProbe, chooseCut, chooseClaim, chooseVote, botRng } from './bot';
-import { makeRng } from './engine/rng';
+import { makeRng } from '@ben-gy/game-engine/rng';
 
 export type Action =
   | { t: 'probe'; target: string }

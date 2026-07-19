@@ -10,7 +10,7 @@
  * automatically; Ghosts choose what number to publish.
  */
 
-import { makeRng, shuffle, type Rng } from './engine/rng';
+import { makeRng, shuffle, type Rng } from '@ben-gy/game-engine/rng';
 
 export type Role = 'crew' | 'ghost';
 export type Phase = 'night' | 'dawn' | 'vote' | 'resolve' | 'over';
