@@ -1,7 +1,14 @@
 /**
- * lobby.ts — a drop-in peer-to-peer lobby built on net.ts + rematch.ts. Copied
- * from the gh-game-factory patterns/ engine. Style .lobby-* / .re-* / .vis-* /
- * .spinner in the game CSS.
+ * lobby.ts — Nightwire's lobby view, built on @ben-gy/game-engine's net +
+ * rematch. Style .lobby-* / .re-* / .vis-* / .spinner in the game CSS.
+ *
+ * This is the ONE engine file Nightwire still owns, and deliberately so: it
+ * carries two surfaces the shared engine has no notion of — the public-room
+ * browser (visibility chips, BoardAccess, roomAd/createListing, the IP-disclosure
+ * copy) and the host's mode picker slot. Both are exported from here and used by
+ * main.ts, so folding it back into the package would mean deleting features.
+ * Everything underneath it — the transport, the election, the round protocol —
+ * comes from the package, which is where the fixes live.
  *
  * This file is a VIEW. It owns no protocol: presence, readiness, quorum, the
  * shared seed and the frozen roster all come from rematch.ts, so dealing the
@@ -10,11 +17,11 @@
  * a seed but no roster, leaving peers free to disagree about who sat where.
  */
 
-import type { Net, PeerId } from './net';
+import type { Net, PeerId } from '@ben-gy/game-engine/net';
 // Types only. Importing the noticeboard's implementation here would drag a mesh
 // of strangers into every screen that shows a room code — see BoardAccess.
-import type { PublicRoom, RoomAd } from './noticeboard';
-import type { Rounds } from './rematch';
+import type { PublicRoom, RoomAd } from '@ben-gy/game-engine/noticeboard';
+import type { Rounds } from '@ben-gy/game-engine/rematch';
 
 export interface LobbyPlayer {
   id: PeerId;
@@ -429,10 +436,33 @@ export function createRoomEntry(config: RoomEntryConfig): { destroy: () => void 
   };
 }
 
+/**
+ * How long a peer sits alone and unsettled before the lobby offers to host.
+ *
+ * net.ts deliberately never self-elects on a roster of one: silence is evidence
+ * of no mesh, not of an empty room, and a peer that assumed otherwise became a
+ * phantom host that later stole a live table from the incumbent. But that means
+ * a guest who opens an invite link before anyone else is there would otherwise
+ * watch the connecting spinner forever, so after this long we offer the takeover
+ * as an explicit choice. Hosting an invite-link room is a UX decision, never a
+ * transport one — the player says so, the transport never guesses.
+ */
+const OFFER_HOST_MS = 15000;
+
 export function createLobby(config: LobbyConfig): { destroy: () => void; repaint: () => void } {
   const { net, rounds, container } = config;
   const minPlayers = config.minPlayers ?? 2;
   const maxPlayers = config.maxPlayers ?? 8;
+  const openedAt = Date.now();
+  /** Set once the player accepts the offer, so it cannot be re-offered. */
+  let tookOver = false;
+
+  /** Alone, unsettled, and waiting long enough that we should offer to host. */
+  function shouldOfferHost(): boolean {
+    return (
+      !tookOver && !net.hostSettled() && net.count() === 1 && Date.now() - openedAt > OFFER_HOST_MS
+    );
+  }
 
   // The lobby renders; it does not decide. Presence, readiness, quorum and the
   // start signal all live in rematch.ts, so the first round and every rematch
@@ -491,7 +521,14 @@ export function createLobby(config: LobbyConfig): { destroy: () => void; repaint
     const s = rounds.state();
     if (s.phase === 'playing') return;
     const ps = players();
-    const key = JSON.stringify([ps, s.canStart, s.voted, net.hostSettled(), config.modeSlot?.() ?? '']);
+    const key = JSON.stringify([
+      ps,
+      s.canStart,
+      s.voted,
+      net.hostSettled(),
+      shouldOfferHost(),
+      config.modeSlot?.() ?? '',
+    ]);
     if (key === painted) return;
     painted = key;
 
@@ -520,13 +557,18 @@ export function createLobby(config: LobbyConfig): { destroy: () => void; repaint
             .join('')}
         </ul>
         ${
-          !net.hostSettled()
-            ? `<div class="lobby-searching"><span class="spinner" aria-hidden="true"></span>
-                 <span>Connecting to the room…</span></div>`
-            : ps.length < minPlayers
+          shouldOfferHost()
+            ? `<div class="lobby-searching lobby-offer">
+                 <span>Nobody's here yet. If you minted this code, you can host the table.</span>
+                 <button class="lobby-btn lobby-host" type="button">Host this room</button>
+               </div>`
+            : !net.hostSettled()
               ? `<div class="lobby-searching"><span class="spinner" aria-hidden="true"></span>
+                 <span>Connecting to the room…</span></div>`
+              : ps.length < minPlayers
+                ? `<div class="lobby-searching"><span class="spinner" aria-hidden="true"></span>
                  <span>Looking for ${minPlayers - ps.length} more player${minPlayers - ps.length === 1 ? '' : 's'}… share the invite link</span></div>`
-              : ''
+                : ''
         }
         ${config.modeSlot ? config.modeSlot() : ''}
         <div class="lobby-actions">
@@ -547,6 +589,13 @@ export function createLobby(config: LobbyConfig): { destroy: () => void; repaint
       </div>`;
 
     config.onModeMount?.();
+    container.querySelector('.lobby-host')?.addEventListener('click', () => {
+      tookOver = true;
+      // Mints a term above anything heard, so this is a claim the room adopts
+      // rather than an argument it has to win on id.
+      net.takeover();
+      render();
+    });
     container.querySelector('.lobby-share')?.addEventListener('click', () => void share());
     container.querySelector('.lobby-ready')?.addEventListener('click', () => {
       if (rounds.state().voted) rounds.unvote();

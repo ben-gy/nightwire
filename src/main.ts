@@ -13,11 +13,12 @@ mountFeedback();
 
 import './styles/mobile.css';
 import './styles/main.css';
-import { hardenViewport } from './engine/mobile';
-import { createStore } from './engine/storage';
+import { hardenViewport } from '@ben-gy/game-engine/mobile';
+import { createStore } from '@ben-gy/game-engine/storage';
 import { createSfx, type SfxName } from './engine/sound';
-import { createNet, type Net } from './engine/net';
-import { createRounds, type Rounds, type RoundPlayer } from './engine/rematch';
+import { createNet, roomAppId, setTurnConfig, type Net } from '@ben-gy/game-engine/net';
+import { getTurnConfig } from '@ben-gy/game-engine/turn';
+import { createRounds, type Rounds, type RoundPlayer } from '@ben-gy/game-engine/rematch';
 import {
   clearRoomInUrl,
   createLobby,
@@ -29,18 +30,39 @@ import {
   type BoardAccess,
   type Listing,
 } from './engine/lobby';
-import { createNoticeboard, type Noticeboard, type PublicRoom } from './engine/noticeboard';
+import { createNoticeboard, type Noticeboard, type PublicRoom } from '@ben-gy/game-engine/noticeboard';
 import { Session, GAME_CHANNELS, type Action, type Transport } from './session';
 import { createGameUi, escapeHtml, type GameUi } from './ui';
 import { createFx, type Fx } from './fx';
 import { createCountdown } from './countdown';
 import { BOT_NAMES } from './bot';
-import { shuffle, makeRng } from './engine/rng';
+import { shuffle, makeRng } from '@ben-gy/game-engine/rng';
 import { MIN_SEATS, type PublicState, type PrivateView, type Role } from './game';
 import { DEFAULT_MODE, MODE_LIST, modeMeta, modeOf, rulesFor, type ModeId } from './modes';
 
 const SLUG = 'nightwire';
 const MAX_SEATS_MP = 10;
+
+/**
+ * Fetch the TURN credentials and install them before ANY mesh exists.
+ *
+ * Trystero builds one global connection pool from the config of the first
+ * joinRoom() on the page and reuses it for every room afterwards, so a
+ * setTurnConfig() that lands even one room late leaves the initiating half of
+ * every peer pair on STUN only — and STUN alone does not survive carrier CGNAT,
+ * which is how two phones on mobile data end up in the same room code seeing
+ * nobody. Nightwire has two meshes and the public-room noticeboard is usually
+ * the FIRST one a player opens (Browse, before any game room exists), so this
+ * cannot live in the room-join path: it belongs at boot.
+ *
+ * Awaited at both mesh sites rather than fired and forgotten. getTurnConfig() is
+ * session-cached and fails open to [], so this is at worst one short wait on the
+ * first tap and never a reason a join does not happen.
+ */
+const turnReady: Promise<void> = getTurnConfig().then(
+  (servers) => setTurnConfig(servers),
+  () => setTurnConfig([]),
+);
 
 // Before anything renders: iOS ignores the viewport meta's user-scalable=no, so
 // a double-tap or a pinch zooms into a live table with no way back out.
@@ -317,8 +339,11 @@ let boardQueue: Promise<void> = Promise.resolve();
 
 function onBoard(then: () => void): Promise<void> {
   boardQueue = boardQueue
+    .then(() => turnReady)
     .then(() => {
-      board ??= createNoticeboard({ appId: SLUG, onRooms: (r) => boardRooms?.(r) });
+      // Very often the first mesh of the session — see turnReady. Same appId
+      // stamping as the game room so a cached old build cannot half-join.
+      board ??= createNoticeboard({ appId: roomAppId(SLUG), onRooms: (r) => boardRooms?.(r) });
       then();
     })
     .then(
@@ -350,7 +375,7 @@ const boardAccess: BoardAccess = {
   },
 };
 
-/** Feed engine/lobby.ts's roomAd() rule the room's current truth. It decides. */
+/** Feed lobby.ts's roomAd() rule the room's current truth. It decides. */
 function syncListing(): void {
   if (!listing) return;
   if (!net || !rounds) {
@@ -503,6 +528,9 @@ async function openRoom(code: string, created: boolean, isPublic: boolean): Prom
   // A previous room may still be tearing down (Trystero defers it ~99ms).
   // Joining inside that window returns the dying room, so wait it out.
   await roomTeardown;
+  // Relays before the first mesh, always — see turnReady. Already resolved if
+  // the player came through Browse.
+  await turnReady;
   // The public flag stays OUT of the URL. It is the host's live choice, not a
   // property of the code: baked into an invite link it would survive the host
   // flipping the room private, and every guest who forwarded the link would be
@@ -516,7 +544,11 @@ async function openRoom(code: string, created: boolean, isPublic: boolean): Prom
       // `created` is the difference between minting this code and walking into
       // someone else's room. Only the minter may host on arrival; a guest waits
       // to hear from the incumbent instead of racing it for the role.
-      { appId: SLUG, roomId: code, claimHost: created },
+      //
+      // roomAppId() stamps the wire revision into the app id, so a player on a
+      // cached old build lands in a different room entirely rather than joining
+      // this one and speaking a protocol nobody here understands.
+      { appId: roomAppId(SLUG), roomId: code, claimHost: created },
       {
         // Wiring these is the whole host-transfer contract. A bare createNet()
         // here would make a takeover impossible.
@@ -532,7 +564,7 @@ async function openRoom(code: string, created: boolean, isPublic: boolean): Prom
       },
     );
   } catch (err) {
-    // The room is somehow still held (see engine/net.ts). Never strand the
+    // The room is somehow still held (see the engine's net.ts). Never strand the
     // player on a blank screen — say so and go back somewhere they can act.
     console.error(err);
     flash('Could not open that room — try again');
@@ -748,7 +780,7 @@ function syncAuthority(): void {
  * "Play again" in a room. NOT a rejoin: the mesh stays exactly as it is and this
  * only registers a vote — the next table is dealt underneath us once everyone
  * has voted. Leaving and rejoining here is what used to strand every player
- * alone as their own host (see engine/net.ts).
+ * alone as their own host (see the engine's net.ts).
  */
 function playAgain(): void {
   if (!rounds) return;
@@ -950,7 +982,7 @@ let roomTeardown: Promise<void> = Promise.resolve();
  * tables. `net.leave()` is awaited because Trystero keeps the room in its cache
  * until teardown finishes; joining again before then hands back the dying room
  * and every peer ends up alone, elected host of nothing. A rematch keeps the Net
- * and deals a new round inside it (engine/rematch.ts).
+ * and deals a new round inside it (the engine's rematch.ts).
  */
 function leaveRoom(): Promise<void> {
   teardownGame();

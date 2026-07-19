@@ -17,7 +17,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { Session, GAME_CHANNELS, type Transport } from '../src/session';
-import { createRounds } from '../src/engine/rematch';
+import { createRounds } from '@ben-gy/game-engine/rematch';
 import { deal, type PublicState } from '../src/game';
 
 const specs = (n: number) =>
@@ -164,12 +164,27 @@ describe('channel names — the table and the rematch must not share one', () =>
       host: () => 'a',
       isHost: () => true,
       hostSettled: () => true,
+      hostEpoch: () => 1,
       count: () => 1,
       channel: (name: string) => {
         registered.push(name);
         const send = Object.assign(() => {}, { off: () => {} });
         return send;
       },
+      // rematch.ts subscribes to the roster now — that subscription is what
+      // unicasts a live round to a peer whose channel opened late, instead of
+      // leaving it in the lobby watching a game it was supposed to be in.
+      onPeersChange: () => () => {},
+      takeover: () => {},
+      netDiag: () => ({
+        selfId: 'a',
+        host: 'a',
+        epoch: 1,
+        settled: true,
+        peers: ['a'],
+        relaySockets: {},
+        turn: false,
+      }),
       ping: async () => 0,
       leave: async () => {},
     };

@@ -942,6 +942,16 @@ a {
   line-height: 1.4;
 }
 
+/* The offer to host a room nobody answered. net.ts will not self-elect a peer
+   that is alone — silence means no mesh, not an empty room — so this is the one
+   way a first-arriving guest becomes the host, and it stacks the explanation
+   above the button rather than squeezing both onto one line. */
+.lobby-offer {
+  flex-direction: column;
+  gap: 12px;
+  text-align: center;
+}
+
 .lobby-flash {
   min-height: 20px;
   margin-top: 8px;

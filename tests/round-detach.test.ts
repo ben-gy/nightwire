@@ -53,8 +53,14 @@ const roster = [
  * did not deal ourselves needs a host that is not us. Announcing on '__h' is how
  * a real incumbent says so, and 'aaa' sorts below 'self-id', so the two-claimants
  * rule converges on it. Id order is doing real work here, not decoration.
+ *
+ * The announce carries a TERM now. Host claims are epoch-ordered — higher term
+ * wins outright, equal term breaks by min-id — which is what stops a joiner
+ * stealing a live room. Both of us minted at term 1, so this is the equal-term
+ * case and 'aaa' takes it on id. An announce with no epoch is malformed and
+ * net.ts drops it, which is the point: an untermed claim cannot move a room.
  */
-const cedeHostTo = (id: string): void => recv.get('__h')!({ host: id }, id);
+const cedeHostTo = (id: string): void => recv.get('__h')!({ host: id, epoch: 1 }, id);
 
 /** Deal a table from the host, exactly as rematch.ts would receive it. */
 const dealTable = (round: number): void =>

@@ -23,7 +23,7 @@ import {
   type Role,
   type PrivateView,
 } from './game';
-import { makeRng, type Rng } from './engine/rng';
+import { makeRng, type Rng } from '@ben-gy/game-engine/rng';
 
 /** Every k-sized subset of ids. */
 export function combos(ids: readonly string[], k: number): string[][] {
