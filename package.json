@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "type": "module",
   "description": "Some of the numbers are lying — find the Ghosts at the table before the lights go out.",
+  "license": "AGPL-3.0-or-later",
   "scripts": {
     "dev": "vite",
     "icons": "node scripts/gen-icons.mjs",
