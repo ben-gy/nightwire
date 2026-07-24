@@ -9,10 +9,6 @@
 
 // mobile.css FIRST — it is the baseline main.css is allowed to override, not
 // the other way round.
-// feedback:begin (managed by hub/scripts/feedback/backfill.mjs)
-import { mountFeedback } from './feedback';
-mountFeedback();
-// feedback:end
 
 import './styles/mobile.css';
 import './styles/main.css';
